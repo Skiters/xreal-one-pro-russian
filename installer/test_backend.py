@@ -74,14 +74,16 @@ class BackendTests(unittest.TestCase):
         return data, events
 
     def test_experimental_only_allows_verified_sku(self):
-        probe = FakeProbe(sku='X1112010', target_pilot=b.PILOT_2)
-        self.run_update(probe, b.EXPERIMENTAL)
-        self.assertEqual(probe.pilot, b.PILOT_2)
-        for sku in ('X1112011', 'X1112012'):
-            probe = FakeProbe(sku=sku, target_pilot=b.PILOT_2)
-            with self.assertRaises(RuntimeError):
-                self.run_update(probe, b.EXPERIMENTAL)
-            self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
+        for firmware in (b.EXPERIMENTAL, b.REAL3D):
+            with self.subTest(firmware=firmware.key):
+                probe = FakeProbe(sku='X1112010', target_pilot=b.PILOT_2)
+                self.run_update(probe, firmware)
+                self.assertEqual(probe.pilot, b.PILOT_2)
+                for sku in ('X1112011', 'X1112012'):
+                    probe = FakeProbe(sku=sku, target_pilot=b.PILOT_2)
+                    with self.assertRaises(RuntimeError):
+                        self.run_update(probe, firmware)
+                    self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
 
     def test_standard_can_replace_experimental(self):
         probe = FakeProbe(pilot=b.PILOT_2, target_pilot=b.PILOT)

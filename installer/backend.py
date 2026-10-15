@@ -44,7 +44,11 @@ EXPERIMENTAL = Firmware(
      'pilot/conf/pilot_default_config.json', 'pilot/conf/pilot_default_config_gina.json',
      'pilot/conf/pilot_default_config_hebe.json', 'pilot/resource/lut_3d_ai_hdr.cube',
      'pilot/checksums.sha256'))
-FIRMWARES = {firmware.key: firmware for firmware in (STANDARD, EXPERIMENTAL)}
+REAL3D = Firmware(
+    'real3d', 'XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin',
+    '1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0',
+    PILOT_2, 0x66, frozenset({'X1112010'}), EXPERIMENTAL.files)
+FIRMWARES = {firmware.key: firmware for firmware in (STANDARD, EXPERIMENTAL, REAL3D)}
 ACCEPTED_PILOT = frozenset({'1.9.1.20260914175625', PILOT_2})
 
 
@@ -98,7 +102,8 @@ def identity(probe, firmware=STANDARD):
 def firmware_path(firmware=STANDARD):
     if getattr(sys, 'frozen', False):
         return Path(sys._MEIPASS) / firmware.filename
-    folder = 'xreal-russian-firmware' if firmware is STANDARD else 'xreal-pilot2-hebe'
+    folder = ('xreal-russian-firmware' if firmware is STANDARD else
+              'xreal-pilot2-real3d-cpu' if firmware is REAL3D else 'xreal-pilot2-hebe')
     return Path(__file__).resolve().parents[1] / 'outputs' / folder / firmware.filename
 
 

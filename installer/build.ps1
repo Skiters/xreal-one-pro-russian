@@ -11,5 +11,6 @@ if ($LASTEXITCODE) { throw 'Dependency installation failed' }
 if ($LASTEXITCODE) { throw 'Tests failed' }
 $firmware = (Resolve-Path 'outputs/xreal-russian-firmware/XREAL_One_Pro_Pilot_RU.bin').Path
 $experimental = (Resolve-Path 'outputs/xreal-pilot2-hebe/XREAL-Pilot2-RU-Hebe-Within-Limit.bin').Path
-& $python -m PyInstaller --noconfirm --onefile --windowed --noupx --name XREAL-Russian-Updater --paths work --paths installer --add-data "${firmware}:." --add-data "${experimental}:." --distpath outputs/xreal-windows-installer --workpath work/installer-build --specpath work installer/app.py
+$real3d = (Resolve-Path 'outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin').Path
+& $python -m PyInstaller --noconfirm --onefile --windowed --noupx --name XREAL-Russian-Updater --paths work --paths installer --add-data "${firmware}:." --add-data "${experimental}:." --add-data "${real3d}:." --distpath outputs/xreal-windows-installer --workpath work/installer-build --specpath work installer/app.py
 if ($LASTEXITCODE) { throw 'Build failed' }

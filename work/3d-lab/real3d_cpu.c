@@ -1,0 +1,414 @@
+/* Experimental CPU fallback for Pilot 2.0 Real3D RPCs on One Pro.
+ * The vendor's 480-pixel depth map drives horizontal stereo disparity.
+ * A failed ABI/layout check leaves the existing HDR path untouched.
+ */
+typedef unsigned char u8;
+typedef unsigned int u32;
+typedef unsigned long u64;
+typedef unsigned long size_t;
+#define NULL ((void *)0)
+extern int strcmp(const char *, const char *);
+extern int snprintf(char *, size_t, const char *, ...);
+extern int open(const char *, int, ...);
+extern long write(int, const void *, size_t);
+extern int close(int);
+extern int pthread_create(u64 *, const void *, void *(*)(void *), void *);
+extern int pthread_join(u64, void **);
+struct timespec { long sec, nsec; };
+extern int clock_gettime(int, struct timespec *);
+
+extern void *ar_hal_sys_mmap_cache(u64, u32);
+extern int ar_hal_sys_munmap(void *, u32);
+extern int ar_hal_sys_mmz_invalid_cache(u64, void *, u32);
+extern int ar_hal_sys_mmz_flush_cache_pa(u64, u32);
+
+struct rpc {
+    char name[32];
+    u64 reserved;
+    const void *args;
+    u32 length;
+};
+
+/* Recovered from the Pilot 2.0 ARM64 call at 0xdb160..0xdb208. */
+struct real3d_frame {
+    u32 width, height;
+    u32 src_stride_y, src_stride_uv;
+    u32 dst_stride_y, dst_stride_uv;
+    u32 depth_width, depth_mode;
+    u64 src[3];
+    u64 dst[3];
+    u64 depth;
+    u64 result;
+};
+_Static_assert(sizeof(struct real3d_frame) == 96, "Real3D RPC ABI");
+_Static_assert(__builtin_offsetof(struct rpc, args) == 40, "RPC pointer ABI");
+
+static int initialized;
+static u32 frames;
+static u32 depth_min, depth_max, shifted_samples;
+static u32 map_us, warp_us, flush_us;
+
+static u64 monotonic_us(void) {
+    struct timespec t;
+    if (clock_gettime(1, &t)) return 0;
+    return (u64)t.sec * 1000000ULL + (u64)t.nsec / 1000;
+}
+
+static void diagnostic(const char *event, const struct real3d_frame *f, int rc) {
+    char line[550];
+    int n;
+    if (f) {
+        n = snprintf(line, sizeof(line),
+            "Real3D CPU %s rc=%d frame=%u %ux%u strides=%u/%u -> %u/%u depth_width=%u mode=%u "
+            "src=%lx,%lx,%lx dst=%lx,%lx,%lx map=%lx result=%lx "
+            "depth_range=%u..%u shifted=%u time_us=%u/%u/%u\n",
+            event, rc, frames, f->width, f->height,
+            f->src_stride_y, f->src_stride_uv,
+            f->dst_stride_y, f->dst_stride_uv,
+            f->depth_width, f->depth_mode,
+            f->src[0], f->src[1], f->src[2],
+            f->dst[0], f->dst[1], f->dst[2], f->depth, f->result,
+            depth_min, depth_max, shifted_samples, map_us, warp_us, flush_us);
+    } else {
+        n = snprintf(line, sizeof(line), "Real3D CPU %s rc=%d frames=%u\n",
+                     event, rc, frames);
+    }
+    if (n <= 0 || n >= (int)sizeof(line)) return;
+    int fd = open("/usrdata/real3d-cpu.log", 1 | 64 | 1024, 0600);
+    if (fd >= 0) { (void)write(fd, line, (size_t)n); (void)close(fd); }
+}
+
+/* One Pro's MMZ pool used by the already validated HDR fallback. */
+static int valid(u64 address, u32 bytes) {
+    return bytes && address >= 0x33000000ULL && address < 0x40000000ULL &&
+           bytes <= 0x40000000ULL - address;
+}
+
+static void *map(u64 address, u32 bytes) {
+    if (!valid(address, bytes)) return NULL;
+    void *p = ar_hal_sys_mmap_cache(address, bytes);
+    if (!p || p == (void *)-1) return NULL;
+    int rc = ar_hal_sys_mmz_invalid_cache(address, p, bytes);
+    if (rc && (u32)rc != 0x80028003U) {
+        ar_hal_sys_munmap(p, bytes);
+        return NULL;
+    }
+    return p;
+}
+
+static int set_result(u64 address, int result) {
+    int *p = map(address, 64);
+    if (!p) return -5;
+    *p = result;
+    int rc = ar_hal_sys_mmz_flush_cache_pa(address, 64);
+    ar_hal_sys_munmap(p, 64);
+    return rc ? -5 : 0;
+}
+
+static u32 clamp_x(int x, u32 width) {
+    if (x < 0) return 0;
+    if ((u32)x >= width) return width - 1;
+    return (u32)x;
+}
+
+static int depth_shift(u8 value, u32 width, u32 depth_width) {
+    /* The NPU's depth map uses zero for the far background.  A fixed
+     * midpoint of 128 shifted nearly the entire live frame equally. */
+    int shift = value / 12;
+    int maximum = width / depth_width == 2 ? 6 : 12;
+    return shift < maximum ? shift : maximum;
+}
+
+/* The live Real3D frame is 1920x1080 with a 480x270 depth map.  Each
+ * depth sample covers four luma pixels or two chroma pixels.  Process a
+ * complete depth cell at once so that division and disparity calculation
+ * are not repeated for every output pixel. */
+static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
+                                  u32 width, u32 height, u32 src_stride,
+                                  u32 dst_stride, u32 depth_width,
+                                  u32 depth_height, u32 begin, u32 end) {
+    u32 pixels = width / depth_width;
+    u32 rows = height / depth_height;
+    if ((pixels != 2 && pixels != 4) || !rows ||
+        width % depth_width || height % depth_height ||
+        begin > end || end > depth_height) return -22;
+    for (u32 zy = begin; zy < end; ++zy) {
+        const u8 *z = depth + (size_t)zy * depth_width;
+        for (u32 zx = 0; zx < depth_width; ++zx) {
+            u32 x = zx * pixels;
+            int shift = depth_shift(z[zx], width, depth_width);
+            int sx = (int)x + shift;
+            if (sx >= 0 && (u32)sx + pixels <= width) {
+                for (u32 ry = 0; ry < rows; ++ry) {
+                    u32 y = zy * rows + ry;
+                    u8 *d = dst + (size_t)y * dst_stride + x;
+                    const u8 *s = src + (size_t)y * src_stride + sx;
+                    if (pixels == 4)
+                        __builtin_memcpy(d, s, 4);
+                    else
+                        __builtin_memcpy(d, s, 2);
+                }
+            } else {
+                for (u32 ry = 0; ry < rows; ++ry) {
+                    u32 y = zy * rows + ry;
+                    u8 *d = dst + (size_t)y * dst_stride + x;
+                    const u8 *s = src + (size_t)y * src_stride;
+                    for (u32 k = 0; k < pixels; ++k)
+                        d[k] = s[clamp_x(sx + (int)k, width)];
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int warp_plane_cells(const u8 *src, u8 *dst, const u8 *depth,
+                            u32 width, u32 height, u32 src_stride,
+                            u32 dst_stride, u32 depth_width,
+                            u32 depth_height) {
+    return warp_plane_cells_range(src, dst, depth, width, height, src_stride,
+                                  dst_stride, depth_width, depth_height,
+                                  0, depth_height);
+}
+
+struct segment_job {
+    const u8 *src[3], *depth;
+    u8 *dst[3];
+    u32 width[3], height[3], src_stride[3], dst_stride[3];
+    u32 depth_width, depth_height;
+    u32 begin, end;
+    int rc;
+};
+
+static void *segment_worker(void *arg) {
+    struct segment_job *j = arg;
+    j->rc = 0;
+    for (u32 channel = 0; channel < 3; ++channel) {
+        j->rc = warp_plane_cells_range(j->src[channel], j->dst[channel],
+                                        j->depth, j->width[channel],
+                                        j->height[channel], j->src_stride[channel],
+                                        j->dst_stride[channel], j->depth_width,
+                                        j->depth_height, j->begin, j->end);
+        if (j->rc) break;
+    }
+    return NULL;
+}
+
+/* Process one colour plane.  The vendor may request one warped eye or a
+ * side-by-side buffer; both layouts are bounded by the validated strides. */
+static int warp_plane(const u8 *src, u8 *dst, const u8 *depth,
+                      u32 width, u32 height, u32 src_stride, u32 dst_stride,
+                      u32 depth_width, u32 depth_stride, u32 depth_height,
+                      int side_by_side) {
+    if (!src || !dst || !depth || !width || !height ||
+        src_stride < width || dst_stride < width * (side_by_side ? 2U : 1U) ||
+        depth_width < 16 || depth_stride < depth_width || !depth_height)
+        return -22;
+    for (u32 y = 0; y < height; ++y) {
+        const u8 *s = src + (size_t)y * src_stride;
+        u8 *d = dst + (size_t)y * dst_stride;
+        const u8 *z = depth + (size_t)(y * depth_height / height) * depth_stride;
+        for (u32 x = 0; x < width; ++x) {
+            u8 near = z[x * depth_width / width];
+            int shift = depth_shift(near, width, depth_width);
+            if (side_by_side) {
+                d[x] = s[clamp_x((int)x + shift / 2, width)];
+                d[x + width] = s[clamp_x((int)x - shift / 2, width)];
+            } else {
+                d[x] = s[clamp_x((int)x + shift, width)];
+            }
+        }
+    }
+    return 0;
+}
+
+static int process_frame(const struct real3d_frame *f) {
+    if (!initialized || !f || !f->width || !f->height ||
+        f->width > 1920 || f->height > 1080 ||
+        f->depth_width != 480 || f->depth_mode > 8 ||
+        f->src_stride_y < f->width || f->src_stride_y > 4096 ||
+        f->dst_stride_y < f->width || f->dst_stride_y > 8192 ||
+        f->src_stride_uv < f->width / 2 || f->src_stride_uv > 4096 ||
+        f->dst_stride_uv < f->width / 2 || f->dst_stride_uv > 8192)
+        return -22;
+
+    int side_by_side = f->dst_stride_y >= 2 * f->width;
+    int chroma_half = f->src_stride_uv * 2 <= f->src_stride_y;
+    u32 depth_height = (f->height + 3) / 4;
+    u32 depth_size = f->depth_width * depth_height;
+    if (!valid(f->depth, depth_size) || !valid(f->result, 64)) return -22;
+
+    u64 started_at = monotonic_us();
+    u8 *z = map(f->depth, depth_size);
+    if (!z) return -5;
+    if (frames < 3 || frames % 300 == 0) {
+        depth_min = 255;
+        depth_max = shifted_samples = 0;
+        for (u32 i = 0; i < depth_size; ++i) {
+            u8 v = z[i];
+            if (v < depth_min) depth_min = v;
+            if (v > depth_max) depth_max = v;
+            if (depth_shift(v, f->width, f->depth_width)) ++shifted_samples;
+        }
+    }
+    int rc = 0;
+    u8 *source[3] = {NULL, NULL, NULL};
+    u8 *destination[3] = {NULL, NULL, NULL};
+    u32 widths[3], heights[3], src_strides[3], dst_strides[3];
+    u32 src_sizes[3], dst_sizes[3];
+    for (u32 channel = 0; channel < 3; ++channel) {
+        widths[channel] = channel && chroma_half ? (f->width + 1) / 2 : f->width;
+        heights[channel] = channel && chroma_half ? (f->height + 1) / 2 : f->height;
+        src_strides[channel] = channel ? f->src_stride_uv : f->src_stride_y;
+        dst_strides[channel] = channel ? f->dst_stride_uv : f->dst_stride_y;
+        src_sizes[channel] = src_strides[channel] * heights[channel];
+        dst_sizes[channel] = dst_strides[channel] * heights[channel];
+        if (!valid(f->src[channel], src_sizes[channel]) ||
+            !valid(f->dst[channel], dst_sizes[channel]) ||
+            (f->src[channel] < f->dst[channel] + dst_sizes[channel] &&
+             f->dst[channel] < f->src[channel] + src_sizes[channel])) {
+            rc = -22;
+            break;
+        }
+        for (u32 prior = 0; prior < channel; ++prior)
+            if ((f->dst[channel] < f->dst[prior] + dst_sizes[prior] &&
+                 f->dst[prior] < f->dst[channel] + dst_sizes[channel]) ||
+                (f->src[channel] < f->dst[prior] + dst_sizes[prior] &&
+                 f->dst[prior] < f->src[channel] + src_sizes[channel]) ||
+                (f->dst[channel] < f->src[prior] + src_sizes[prior] &&
+                 f->src[prior] < f->dst[channel] + dst_sizes[channel]))
+                rc = -22;
+        if (rc) break;
+    }
+    if (rc) goto done;
+    for (u32 channel = 0; channel < 3; ++channel) {
+        source[channel] = map(f->src[channel], src_sizes[channel]);
+        destination[channel] = map(f->dst[channel], dst_sizes[channel]);
+        if (!source[channel] || !destination[channel]) { rc = -5; goto done; }
+    }
+    u64 mapped_at = monotonic_us();
+
+    if (!side_by_side && chroma_half && f->width == 1920 && f->height == 1080) {
+        /* Four independent depth-row segments on the four Cortex-A53 cores. */
+        struct segment_job jobs[4];
+        u64 threads[3] = {0, 0, 0};
+        int started[3] = {0, 0, 0};
+        for (u32 i = 0; i < 4; ++i) {
+            jobs[i] = (struct segment_job){
+                .depth = z, .depth_width = f->depth_width,
+                .depth_height = depth_height,
+                .begin = depth_height * i / 4,
+                .end = depth_height * (i + 1) / 4, .rc = 0,
+            };
+            for (u32 channel = 0; channel < 3; ++channel) {
+                jobs[i].src[channel] = source[channel];
+                jobs[i].dst[channel] = destination[channel];
+                jobs[i].width[channel] = widths[channel];
+                jobs[i].height[channel] = heights[channel];
+                jobs[i].src_stride[channel] = src_strides[channel];
+                jobs[i].dst_stride[channel] = dst_strides[channel];
+            }
+        }
+        for (u32 i = 0; i < 3; ++i) {
+            if (!pthread_create(&threads[i], NULL, segment_worker, &jobs[i]))
+                started[i] = 1;
+            else segment_worker(&jobs[i]);
+        }
+        segment_worker(&jobs[3]);
+        for (u32 i = 0; i < 3; ++i) {
+            if (started[i] && pthread_join(threads[i], NULL)) rc = -5;
+        }
+        for (u32 i = 0; i < 4; ++i)
+            if (jobs[i].rc) rc = jobs[i].rc;
+    } else for (u32 channel = 0; channel < 3; ++channel) {
+        int sbs = side_by_side && dst_strides[channel] >= 2 * widths[channel];
+        if (!sbs && widths[channel] % f->depth_width == 0 &&
+            heights[channel] % depth_height == 0 &&
+            (widths[channel] / f->depth_width == 2 ||
+             widths[channel] / f->depth_width == 4))
+            rc = warp_plane_cells(source[channel], destination[channel], z,
+                                  widths[channel], heights[channel],
+                                  src_strides[channel], dst_strides[channel],
+                                  f->depth_width, depth_height);
+        else rc = warp_plane(source[channel], destination[channel], z,
+                             widths[channel], heights[channel],
+                             src_strides[channel], dst_strides[channel],
+                             f->depth_width, f->depth_width, depth_height, sbs);
+        if (rc) break;
+    }
+    u64 warped_at = monotonic_us();
+    if (!rc) for (u32 channel = 0; channel < 3; ++channel)
+        if (ar_hal_sys_mmz_flush_cache_pa(f->dst[channel], dst_sizes[channel])) {
+            rc = -5;
+            break;
+        }
+    if (frames < 3 || frames % 300 == 0) {
+        map_us = (u32)(mapped_at - started_at);
+        warp_us = (u32)(warped_at - mapped_at);
+        flush_us = (u32)(monotonic_us() - warped_at);
+    }
+done:
+    for (u32 channel = 0; channel < 3; ++channel) {
+        if (destination[channel]) ar_hal_sys_munmap(destination[channel], dst_sizes[channel]);
+        if (source[channel]) ar_hal_sys_munmap(source[channel], src_sizes[channel]);
+    }
+    ar_hal_sys_munmap(z, depth_size);
+    return rc;
+}
+
+int xreal_real3d_rpc(u32 core, const struct rpc *call, u32 sync) {
+    if (core || !call || sync != 1 || !call->args) return -22;
+    if (!strcmp(call->name, "ArArmWarp2DTo3DInit")) {
+        if (call->length != 8) return -22;
+        u64 result = *(const u64 *)call->args;
+        int rc = set_result(result, 0);
+        initialized = rc == 0;
+        frames = 0;
+        diagnostic("init", NULL, rc);
+        return rc;
+    }
+    if (!strcmp(call->name, "ArArmWarp2DTo3DClose")) {
+        if (call->length != 8) return -22;
+        u64 result = *(const u64 *)call->args;
+        initialized = 0;
+        int rc = set_result(result, 0);
+        diagnostic("close", NULL, rc);
+        return rc;
+    }
+    if (!strcmp(call->name, "ArArmWarp2DTo3DProcess")) {
+        if (call->length != sizeof(struct real3d_frame)) return -22;
+        const struct real3d_frame *f = call->args;
+        int rc = process_frame(f);
+        if (rc || frames < 3 || frames % 300 == 0)
+            diagnostic("process", f, rc);
+        if (rc) return rc;
+        ++frames;
+        return set_result(f->result, 0);
+    }
+    return -95;
+}
+
+int real3d_warp_plane_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                               u32 width, u32 height, u32 src_stride,
+                               u32 dst_stride, u32 depth_width,
+                               u32 depth_stride, u32 depth_height, int sbs) {
+    return warp_plane(src, dst, depth, width, height, src_stride, dst_stride,
+                      depth_width, depth_stride, depth_height, sbs);
+}
+
+int real3d_warp_cells_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                               u32 width, u32 height, u32 src_stride,
+                               u32 dst_stride, u32 depth_width,
+                               u32 depth_height) {
+    return warp_plane_cells(src, dst, depth, width, height, src_stride,
+                            dst_stride, depth_width, depth_height);
+}
+
+int real3d_warp_cells_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                                     u32 width, u32 height, u32 src_stride,
+                                     u32 dst_stride, u32 depth_width,
+                                     u32 depth_height, u32 begin, u32 end) {
+    return warp_plane_cells_range(src, dst, depth, width, height,
+                                  src_stride, dst_stride, depth_width,
+                                  depth_height, begin, end);
+}

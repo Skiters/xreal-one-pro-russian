@@ -19,7 +19,7 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One Pro · Русское меню · v0.3.0')
+        root.title('XREAL One Pro · Русское меню · v0.4.0')
         scale = float(root.tk.call('tk', 'scaling')) / (96 / 72)
         left, top, right, bottom = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
         if sys.platform == 'win32':
@@ -68,6 +68,7 @@ class App:
         for key, title in (
             ('standard', 'Обычная русская · Pilot 1.9.1'),
             ('experimental', 'Экспериментальная One Pro+ · Pilot 2.0'),
+            ('real3d', 'Экспериментальная One Pro+ · Pilot 2.0 · Real3D'),
         ):
             button = ttk.Radiobutton(frame, text=title, value=key,
                                      variable=self.firmware_key, command=self.firmware_changed)
@@ -75,7 +76,7 @@ class App:
             self.firmware_buttons.append(button)
         self.description = ttk.Label(frame, wraplength=640, justify='left')
         self.description.pack(anchor='w', pady=(5, 10))
-        ttk.Label(frame, text='Обе прошивки встроены в приложение; интернет не нужен. Русский заменяет '
+        ttk.Label(frame, text='Все прошивки встроены в приложение; интернет не нужен. Русский заменяет '
                   'польский язык, английский сохраняется.', wraplength=640).pack(anchor='w')
         ttk.Label(frame, text='Закройте страницу обновления XREAL. Не отключайте USB-кабель во время записи.',
                   foreground='#6b4c16', wraplength=640).pack(anchor='w', pady=(10, 14))
@@ -146,11 +147,16 @@ class App:
             self.description.configure(text='Для One Pro X1112010 и X1112011. Переведено 437 строк; '
                                        'единый шрифт в меню. Основана на штатной Pilot 1.9.1. '
                                        'Русское меню проверено на X1112010.')
-        else:
+        elif self.firmware_key.get() == 'experimental':
             self.description.configure(text='Только для One Pro X1112010. Адаптация Pilot 2.0 от Pro+: '
                                        'русское меню, AI HDR, работающие режимы «Чтение» и «Кино», '
                                        'профиль яркости Hebe в пределах luminance 500. '
                                        'Экспериментальная; ниты прибором не измерялись.')
+        else:
+            self.description.configure(text='Только для One Pro X1112010. Функции Pilot 2.0 выше плюс '
+                                       'экспериментальный Real3D с CPU-обработкой. На одном устройстве '
+                                       'глубина заметна слабо; измерено около 53–55 обработанных кадров/с. '
+                                       'Стабильные 60 кадров/с и совместимость с другими очками не подтверждены.')
         self.selected()
 
     def refresh(self):

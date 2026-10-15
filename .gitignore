@@ -18,6 +18,10 @@
 !/work/test_embedded_fonts.py
 !/work/verify_russian_pilot.py
 !/work/xreal_usb_probe.py
+!/work/3d-lab/
+/work/3d-lab/*
+!/work/3d-lab/real3d_cpu.c
+!/work/3d-lab/vendor_comparison.md
 !/work/translations-ru.json
 !/work/update-analysis/
 /work/update-analysis/*
@@ -41,3 +45,7 @@
 /outputs/xreal-pilot2-hebe/*
 !/outputs/xreal-pilot2-hebe/XREAL-Pilot2-RU-Hebe-Within-Limit.bin
 !/outputs/xreal-pilot2-hebe/README.md
+!/outputs/xreal-pilot2-real3d-cpu/
+/outputs/xreal-pilot2-real3d-cpu/*
+!/outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin
+!/outputs/xreal-pilot2-real3d-cpu/README.md
