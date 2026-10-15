@@ -38,7 +38,9 @@ class Probe:
         frame[22:22+len(payload)] = payload
         struct.pack_into('<I', frame, 1, zlib.crc32(frame[5:22+len(payload)]))
         written = self.device.write(b'\x00' + frame)
-        if written != len(frame) + 1:
+        # Windows HIDAPI pads to OutputReportByteLength and returns that padded
+        # size (1025 on these glasses). Delivery is verified by the reply below.
+        if written < len(frame) + 1:
             raise IOError(f'Incomplete HID write: {written}/{len(frame) + 1}')
         deadline = time.monotonic() + timeout
         ignored = 0

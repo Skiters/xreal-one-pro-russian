@@ -19,7 +19,7 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One Pro · Русское меню')
+        root.title('XREAL One Pro · Русское меню · v0.1.1')
         root.geometry('720x510')
         root.minsize(640, 490)
         root.protocol('WM_DELETE_WINDOW', self.close)
@@ -132,18 +132,27 @@ class App:
 
 
 def main():
-    if '--self-test' in sys.argv:
+    if '--self-test' in sys.argv or '--check-device' in sys.argv:
         # Packaged-runtime smoke test, never opens or writes a HID device.
-        dest = Path(sys.argv[sys.argv.index('--self-test')+1])
+        mode = '--check-device' if '--check-device' in sys.argv else '--self-test'
+        dest = Path(sys.argv[sys.argv.index(mode)+1])
         data, expected = backend.load_package()
         root = tk.Tk()
         root.withdraw()
         app = App(root)
         root.update_idletasks()
-        count = len(backend.devices())
+        found = backend.devices()
+        count = len(found)
         root.destroy()
+        device_identity = None
+        if mode == '--check-device':
+            if count != 1:
+                raise RuntimeError('Read-only check requires exactly one device')
+            with backend.SelectedProbe(found[0]) as probe:
+                device_identity = backend.identity(probe)
         dest.write_text(json.dumps({'ok': True, 'bytes': len(data), 'verified_files': len(expected),
-                                    'hid_devices': count, 'tk_loaded': True, 'usb_writes': 0}), encoding='utf-8')
+                                    'hid_devices': count, 'tk_loaded': True, 'firmware_writes': 0,
+                                    'device_identity': device_identity}), encoding='utf-8')
         return
     if sys.platform == 'win32':
         ctypes.windll.kernel32.CreateMutexW.restype = ctypes.c_void_p

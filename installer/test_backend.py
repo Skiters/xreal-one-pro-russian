@@ -132,6 +132,22 @@ class BackendTests(unittest.TestCase):
             probe.query(4629, b'chunk')
         probe.device.read.assert_not_called()
 
+    def test_windows_padded_write_requires_valid_reply(self):
+        from unittest.mock import Mock
+        probe = b.Probe()
+        probe.device = Mock()
+        probe.device.write.return_value = 1025
+        response = bytearray(512)
+        response[0] = 0xfd
+        struct.pack_into('<H', response, 5, 18)
+        struct.pack_into('<H', response, 15, 38)
+        struct.pack_into('<I', response, 1, zlib.crc32(response[5:23]))
+        probe.device.read.return_value = response
+        self.assertEqual(probe.query(38)['status'], 0)
+        response[1] ^= 1
+        with self.assertRaisesRegex(ValueError, 'CRC32'):
+            probe.query(38)
+
     def test_ui_requires_selection_and_explicit_click(self):
         import tkinter as tk
         from app import App
