@@ -1,0 +1,159 @@
+import hashlib
+import io
+from pathlib import Path
+import struct
+import tempfile
+import unittest
+from unittest.mock import patch
+import zipfile
+import zlib
+
+import backend as b
+
+
+def archive(name, content):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as z:
+        z.writestr(name, content)
+    return stream.getvalue()
+
+
+class FakeProbe:
+    def __init__(self, fail=None, incompatible=False, corrupt=False):
+        self.calls = []
+        self.fail = fail
+        self.incompatible = incompatible
+        self.corrupt = corrupt
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def query(self, command, payload=b'', timeout=16):
+        self.calls.append((command, payload))
+        versions = {38: b.SOC, 4627: b.PILOT, 204: 'other' if self.incompatible else b.SKU}
+        return {'status': 1 if self.fail == command else 0,
+                'payload': versions.get(command, '').encode()}
+
+    def export(self, name, max_bytes):
+        return {'start_status': 0, 'finish_status': 0,
+                'data': archive(name, b'bad' if self.corrupt else b'expected')}
+
+
+class BackendTests(unittest.TestCase):
+    def run_update(self, probe):
+        data = bytes(range(256))*5
+        expected = {name: hashlib.sha256(b'expected').hexdigest() for name in b.FILES}
+        events = []
+        b.update({'path': b'chosen'}, lambda *args: events.append(args),
+                 probe_factory=lambda selected: probe, package_loader=lambda: (data, expected), sleep=lambda _: None)
+        return data, events
+
+    def test_full_flow_chunks_finish_readback(self):
+        probe = FakeProbe()
+        data, events = self.run_update(probe)
+        writes = [(cmd, payload) for cmd, payload in probe.calls if cmd in (4628, 4629, 4630)]
+        self.assertEqual(writes[0], (4628, data[:64]))
+        self.assertEqual(b''.join(p for c, p in writes if c == 4629), data[64:])
+        self.assertTrue(all(len(p) <= 490 for c, p in writes if c == 4629))
+        self.assertEqual(writes[-1], (4630, b''))
+        self.assertEqual(events[-1][1], 100)
+
+    def test_wrong_device_never_writes(self):
+        probe = FakeProbe(incompatible=True)
+        with self.assertRaises(RuntimeError):
+            self.run_update(probe)
+        self.assertFalse(any(c in (4628, 4629, 4630) for c, _ in probe.calls))
+
+    def test_rejected_chunk_never_retries_or_finishes(self):
+        probe = FakeProbe(fail=4629)
+        with self.assertRaises(RuntimeError):
+            self.run_update(probe)
+        self.assertEqual(sum(c == 4629 for c, _ in probe.calls), 1)
+        self.assertFalse(any(c == 4630 for c, _ in probe.calls))
+
+    def test_rejected_finish_is_failure(self):
+        with self.assertRaises(RuntimeError):
+            self.run_update(FakeProbe(fail=4630))
+
+    def test_readback_mismatch_is_failure(self):
+        with self.assertRaises(RuntimeError):
+            self.run_update(FakeProbe(corrupt=True))
+
+    def test_corrupt_package_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)/'bad.bin'
+            path.write_bytes(b'bad')
+            with self.assertRaises(RuntimeError):
+                b.load_package(path)
+
+    def test_selected_path_never_falls_back(self):
+        with patch.object(b, 'devices', return_value=[{'path': b'other'}]), patch.object(b.hid, 'device') as device:
+            with self.assertRaises(RuntimeError):
+                with b.SelectedProbe({'path': b'chosen'}):
+                    pass
+            device.assert_not_called()
+
+    def test_changed_serial_is_rejected(self):
+        with patch.object(b, 'devices', return_value=[{'path': b'chosen', 'serial_number': 'B'}]):
+            with self.assertRaises(RuntimeError):
+                with b.SelectedProbe({'path': b'chosen', 'serial_number': 'A'}):
+                    pass
+
+    def test_actual_transport_frame_crc_and_report_id(self):
+        class Device:
+            def write(self, data):
+                self.written = data
+                return len(data)
+
+            def read(self, size, timeout):
+                response = bytearray(512)
+                response[0] = 0xfd
+                struct.pack_into('<H', response, 5, 18)
+                struct.pack_into('<H', response, 15, 4629)
+                struct.pack_into('<I', response, 1, zlib.crc32(response[5:23]))
+                return b'\0'+response
+        probe = b.Probe()
+        probe.device = Device()
+        self.assertEqual(probe.query(4629, b'chunk')['status'], 0)
+        frame = probe.device.written[1:]
+        self.assertEqual(len(probe.device.written), 513)
+        self.assertEqual(frame[22:27], b'chunk')
+        self.assertEqual(struct.unpack_from('<I', frame, 1)[0], zlib.crc32(frame[5:27]))
+
+    def test_partial_hid_write_is_rejected(self):
+        from unittest.mock import Mock
+        probe = b.Probe()
+        probe.device = Mock()
+        probe.device.write.return_value = 100
+        with self.assertRaises(IOError):
+            probe.query(4629, b'chunk')
+        probe.device.read.assert_not_called()
+
+    def test_ui_requires_selection_and_explicit_click(self):
+        import tkinter as tk
+        from app import App
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            with patch.object(b, 'devices', return_value=[{'path': b'chosen'}]), patch.object(b, 'update') as update:
+                app = App(root)
+                app.refresh()
+                self.assertEqual(str(app.install_button['state']), 'disabled')
+                app.combo.current(0)
+                app.selected()
+                self.assertEqual(str(app.install_button['state']), 'normal')
+                update.assert_not_called()
+                app.busy = True
+                with patch('app.messagebox.showinfo') as notice, patch.object(root, 'destroy') as destroy:
+                    app.close()
+                    notice.assert_called_once()
+                    destroy.assert_not_called()
+        finally:
+            root.destroy()
+
+
+if __name__ == '__main__':
+    unittest.main()
