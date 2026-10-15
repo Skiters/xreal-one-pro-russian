@@ -37,3 +37,7 @@
 !/outputs/xreal-russian-firmware/installed-verification.json
 !/outputs/xreal-russian-firmware/runtime-font-verification.json
 !/outputs/xreal-russian-firmware/XREAL_One_Pro_Pilot_RU.bin
+!/outputs/xreal-pilot2-hebe/
+/outputs/xreal-pilot2-hebe/*
+!/outputs/xreal-pilot2-hebe/XREAL-Pilot2-RU-Hebe-Within-Limit.bin
+!/outputs/xreal-pilot2-hebe/README.md

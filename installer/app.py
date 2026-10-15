@@ -19,7 +19,7 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One Pro · Русское меню · v0.2.1')
+        root.title('XREAL One Pro · Русское меню · v0.3.0')
         scale = float(root.tk.call('tk', 'scaling')) / (96 / 72)
         left, top, right, bottom = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
         if sys.platform == 'win32':
@@ -52,7 +52,7 @@ class App:
         self.content = frame
         self.content_window = self.canvas.create_window(0, 0, window=frame, anchor='nw')
         ttk.Label(frame, text='Русское меню для XREAL One Pro', font=('Segoe UI', 19, 'bold')).pack(anchor='w')
-        ttk.Label(frame, text='Подключите очки по USB → выберите устройство → установите прошивку.',
+        ttk.Label(frame, text='Подключите очки по USB → выберите устройство и прошивку → установите.',
                   wraplength=650).pack(anchor='w', pady=(10, 18))
         ttk.Label(frame, text='1. Выберите очки').pack(anchor='w')
         row = ttk.Frame(frame)
@@ -62,13 +62,24 @@ class App:
         self.combo.bind('<<ComboboxSelected>>', self.selected)
         self.refresh_button = ttk.Button(row, text='Обновить список', command=self.refresh)
         self.refresh_button.pack(anchor='w', pady=(6, 0))
-        ttk.Label(frame, text='Русский заменит польский язык. Английский сохранится.\n'
-                  'Прошивка встроена в приложение. Интернет для установки не нужен.',
-                  wraplength=640).pack(anchor='w')
-        ttk.Label(frame, text='Экспериментальная сборка для Pilot 1.9.1.20260914175625.\n'
-                  'Закройте вкладку обновления XREAL и не отключайте кабель во время записи.',
+        ttk.Label(frame, text='2. Выберите прошивку').pack(anchor='w', pady=(2, 8))
+        self.firmware_key = tk.StringVar(value='standard')
+        self.firmware_buttons = []
+        for key, title in (
+            ('standard', 'Обычная русская · Pilot 1.9.1'),
+            ('experimental', 'Экспериментальная One Pro+ · Pilot 2.0'),
+        ):
+            button = ttk.Radiobutton(frame, text=title, value=key,
+                                     variable=self.firmware_key, command=self.firmware_changed)
+            button.pack(anchor='w', pady=(0, 5))
+            self.firmware_buttons.append(button)
+        self.description = ttk.Label(frame, wraplength=640, justify='left')
+        self.description.pack(anchor='w', pady=(5, 10))
+        ttk.Label(frame, text='Обе прошивки встроены в приложение; интернет не нужен. Русский заменяет '
+                  'польский язык, английский сохраняется.', wraplength=640).pack(anchor='w')
+        ttk.Label(frame, text='Закройте страницу обновления XREAL. Не отключайте USB-кабель во время записи.',
                   foreground='#6b4c16', wraplength=640).pack(anchor='w', pady=(10, 14))
-        self.install_button = ttk.Button(frame, text='2. Установить прошивку', command=self.start, state='disabled')
+        self.install_button = ttk.Button(frame, text='3. Установить выбранную прошивку', command=self.start, state='disabled')
         self.install_button.pack(anchor='w')
         self.verify_button = ttk.Button(frame, text='Проверить без записи', command=lambda: self.start(verify_only=True), state='disabled')
         self.verify_button.pack(anchor='w', pady=(6, 0))
@@ -78,6 +89,7 @@ class App:
         self.status_label = ttk.Label(frame, textvariable=self.status, wraplength=640)
         self.status_label.pack(anchor='w')
         self.labels = [child for child in frame.winfo_children() if isinstance(child, ttk.Label)]
+        self.firmware_changed()
         self.canvas.bind('<Configure>', self.layout)
         frame.bind('<Configure>', self.content_changed)
         root.bind('<MouseWheel>', self.mousewheel)
@@ -122,10 +134,24 @@ class App:
             self.canvas.yview_moveto(max(0, y-8)/max(1, self.content.winfo_height()))
         elif y+widget.winfo_height() > visible_top+visible_height:
             self.canvas.yview_moveto((y+widget.winfo_height()+8-visible_height)/max(1, self.content.winfo_height()))
+            self.canvas.yview_scroll(1, 'units')
 
     def selected(self, _event=None):
-        self.install_button.configure(state='normal' if self.combo.current() >= 0 and not self.busy else 'disabled')
-        self.verify_button.configure(state='normal' if self.combo.current() >= 0 and not self.busy else 'disabled')
+        enabled = self.combo.current() >= 0 and self.firmware_key.get() in backend.FIRMWARES and not self.busy
+        self.install_button.configure(state='normal' if enabled else 'disabled')
+        self.verify_button.configure(state='normal' if enabled else 'disabled')
+
+    def firmware_changed(self):
+        if self.firmware_key.get() == 'standard':
+            self.description.configure(text='Для One Pro X1112010 и X1112011. Переведено 437 строк; '
+                                       'единый шрифт в меню. Основана на штатной Pilot 1.9.1. '
+                                       'Русское меню проверено на X1112010.')
+        else:
+            self.description.configure(text='Только для One Pro X1112010. Адаптация Pilot 2.0 от Pro+: '
+                                       'русское меню, AI HDR, работающие режимы «Чтение» и «Кино», '
+                                       'профиль яркости Hebe в пределах luminance 500. '
+                                       'Экспериментальная; ниты прибором не измерялись.')
+        self.selected()
 
     def refresh(self):
         if self.busy:
@@ -149,19 +175,22 @@ class App:
             return
         selected = self.found[index].copy()
         self.busy = True
-        for widget in [self.install_button, self.verify_button, self.refresh_button, self.combo]:
+        firmware = backend.FIRMWARES[self.firmware_key.get()]
+        for widget in [self.install_button, self.verify_button, self.refresh_button,
+                       self.combo, *self.firmware_buttons]:
             widget.configure(state='disabled')
         self.progress['value'] = 0
         self.status.set('Подготовка…')
-        threading.Thread(target=self.worker, args=(selected, verify_only), daemon=False).start()
+        threading.Thread(target=self.worker, args=(selected, firmware, verify_only), daemon=False).start()
 
-    def worker(self, selected, verify_only=False):
+    def worker(self, selected, firmware, verify_only=False):
         # Hold the machine awake during transmission and read-back, on this same thread.
         try:
             if sys.platform == 'win32':
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
             action = backend.verify_only if verify_only else backend.update
-            action(selected, lambda text, percent: self.events.put(('progress', text, percent)))
+            action(selected, lambda text, percent: self.events.put(('progress', text, percent)),
+                   firmware=firmware)
             self.events.put(('done', '', 100))
         except Exception as e:
             log = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater' / 'last-error.txt'
@@ -186,6 +215,8 @@ class App:
                     self.busy = False
                     self.refresh_button.configure(state='normal')
                     self.combo.configure(state='readonly')
+                    for button in self.firmware_buttons:
+                        button.configure(state='normal')
                     # Require a fresh selection before another write, especially after errors.
                     self.combo.set('')
                     if kind == 'error':
@@ -207,7 +238,10 @@ def main():
         # Diagnostics never issue firmware-writing commands.
         mode = next(flag for flag in ('--verify-device', '--check-device', '--self-test') if flag in sys.argv)
         dest = Path(sys.argv[sys.argv.index(mode)+1])
-        data, expected = backend.load_package()
+        reports = {}
+        for key, firmware in backend.FIRMWARES.items():
+            data, expected = backend.load_package(firmware=firmware)
+            reports[key] = {'bytes': len(data), 'verified_files': len(expected)}
         root = tk.Tk()
         root.withdraw()
         app = App(root)
@@ -220,10 +254,15 @@ def main():
             if count != 1:
                 raise RuntimeError('Read-only check requires exactly one device')
             with backend.SelectedProbe(found[0]) as probe:
-                device_identity = backend.identity(probe)
+                selected_firmware = backend.FIRMWARES.get(
+                    sys.argv[sys.argv.index('--firmware')+1], backend.STANDARD
+                ) if '--firmware' in sys.argv else backend.STANDARD
+                device_identity = backend.identity(probe, selected_firmware)
             if mode == '--verify-device':
-                backend.verify_selected(found[0], expected, lambda *_: None)
-        dest.write_text(json.dumps({'ok': True, 'bytes': len(data), 'verified_files': len(expected),
+                _, expected = backend.load_package(firmware=selected_firmware)
+                backend.verify_selected(found[0], expected, lambda *_: None,
+                                        firmware=selected_firmware)
+        dest.write_text(json.dumps({'ok': True, 'firmwares': reports,
                                     'hid_devices': count, 'tk_loaded': True, 'firmware_writes': 0,
                                     'device_identity': device_identity}), encoding='utf-8')
         return

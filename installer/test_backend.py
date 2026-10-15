@@ -19,7 +19,8 @@ def archive(name, content):
 
 
 class FakeProbe:
-    def __init__(self, fail=None, incompatible=False, corrupt=False, sku='X1112010', soc=None, pilot=None):
+    def __init__(self, fail=None, incompatible=False, corrupt=False, sku='X1112010', soc=None,
+                 pilot=None, target_pilot=None):
         self.calls = []
         self.fail = fail
         self.incompatible = incompatible
@@ -27,6 +28,7 @@ class FakeProbe:
         self.sku = sku
         self.soc = b.SOC if soc is None else soc
         self.pilot = b.PILOT if pilot is None else pilot
+        self.target_pilot = target_pilot
 
     def __enter__(self):
         return self
@@ -36,6 +38,8 @@ class FakeProbe:
 
     def query(self, command, payload=b'', timeout=16):
         self.calls.append((command, payload))
+        if command == 4630 and self.target_pilot and self.fail != command:
+            self.pilot = self.target_pilot
         versions = {38: self.soc, 4627: self.pilot, 204: 'other' if self.incompatible else self.sku}
         return {'status': 1 if self.fail == command else 0,
                 'payload': versions.get(command, '').encode()}
@@ -60,13 +64,42 @@ class BackendTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): self.run_update(probe)
                 self.assertFalse(any(c in (4628,4629,4630) for c,_ in probe.calls))
 
-    def run_update(self, probe):
+    def run_update(self, probe, firmware=b.STANDARD):
         data = bytes(range(256))*5
-        expected = {name: hashlib.sha256(b'expected').hexdigest() for name in b.FILES}
+        expected = {name: hashlib.sha256(b'expected').hexdigest() for name in firmware.files}
         events = []
         b.update({'path': b'chosen'}, lambda *args: events.append(args),
-                 probe_factory=lambda selected: probe, package_loader=lambda: (data, expected), sleep=lambda _: None)
+                 probe_factory=lambda selected: probe, package_loader=lambda: (data, expected),
+                 sleep=lambda _: None, firmware=firmware)
         return data, events
+
+    def test_experimental_only_allows_verified_sku(self):
+        probe = FakeProbe(sku='X1112010', target_pilot=b.PILOT_2)
+        self.run_update(probe, b.EXPERIMENTAL)
+        self.assertEqual(probe.pilot, b.PILOT_2)
+        for sku in ('X1112011', 'X1112012'):
+            probe = FakeProbe(sku=sku, target_pilot=b.PILOT_2)
+            with self.assertRaises(RuntimeError):
+                self.run_update(probe, b.EXPERIMENTAL)
+            self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
+
+    def test_standard_can_replace_experimental(self):
+        probe = FakeProbe(pilot=b.PILOT_2, target_pilot=b.PILOT)
+        self.run_update(probe, b.STANDARD)
+        self.assertEqual(probe.pilot, b.PILOT)
+
+    def test_unknown_pilot2_second_sku_is_rejected(self):
+        probe = FakeProbe(sku='X1112011', pilot=b.PILOT_2, target_pilot=b.PILOT)
+        with self.assertRaises(RuntimeError):
+            self.run_update(probe, b.STANDARD)
+        self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
+
+    def test_all_embedded_firmwares_validate(self):
+        for firmware in b.FIRMWARES.values():
+            with self.subTest(firmware=firmware.key):
+                data, expected = b.load_package(firmware=firmware)
+                self.assertGreater(len(data), 80_000_000)
+                self.assertEqual(set(expected), set(firmware.files))
 
     def test_full_flow_chunks_finish_readback(self):
         probe = FakeProbe()
@@ -212,6 +245,11 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(str(app.install_button['state']), 'disabled')
                 app.combo.current(0)
                 app.selected()
+                self.assertEqual(str(app.install_button['state']), 'normal')
+                self.assertEqual(app.firmware_key.get(), 'standard')
+                app.firmware_key.set('experimental')
+                app.firmware_changed()
+                self.assertIn('AI HDR', app.description['text'])
                 self.assertEqual(str(app.install_button['state']), 'normal')
                 update.assert_not_called()
                 app.busy = True
