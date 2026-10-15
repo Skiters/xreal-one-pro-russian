@@ -15,7 +15,7 @@ ALLOWED.update({4628, 4629, 4630})
 FIRMWARE_SHA = '258ecdb3a9892c7a2bf700c4f0fbccf52ced8915081c0109beb08c59c60418ec'
 SOC = '15.1.03.603_20260914'
 PILOT = '1.9.1.20260914175625'
-SKU = 'X1112010'
+SUPPORTED_SKUS = frozenset({'X1112010', 'X1112011'})
 FILES = ['pilot/resource/osd_language.csv', 'pilot/resource/font/MiSans_Medium_Multi.ttf',
          'pilot/resource/font/MiSans_Bold_Multi.ttf', 'pilot/checksums.sha256', 'pilot/bin/libnr_osd.so']
 
@@ -57,10 +57,10 @@ def checked(probe, command, payload=b'', timeout=16):
 def identity(probe):
     actual = tuple(checked(probe, cmd, payload).rstrip(b'\0').decode('utf-8')
                    for cmd, payload in [(38, b''), (4627, b'\x02'), (204, b'')])
-    if actual != (SOC, PILOT, SKU):
+    if actual[:2] != (SOC, PILOT) or actual[2] not in SUPPORTED_SKUS:
         raise RuntimeError('Эта сборка не подходит к версии или модели очков. '
                            f'Обнаружены: SoC {actual[0]}, Pilot {actual[1]}, SKU {actual[2]}. '
-                           f'Нужны: {SOC}, {PILOT}, {SKU}. Запись не начата.')
+                           f'Нужны: {SOC}, {PILOT}, SKU из списка: {", ".join(sorted(SUPPORTED_SKUS))}. Запись не начата.')
     return actual
 
 

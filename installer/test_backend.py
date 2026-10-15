@@ -19,11 +19,14 @@ def archive(name, content):
 
 
 class FakeProbe:
-    def __init__(self, fail=None, incompatible=False, corrupt=False):
+    def __init__(self, fail=None, incompatible=False, corrupt=False, sku='X1112010', soc=None, pilot=None):
         self.calls = []
         self.fail = fail
         self.incompatible = incompatible
         self.corrupt = corrupt
+        self.sku = sku
+        self.soc = b.SOC if soc is None else soc
+        self.pilot = b.PILOT if pilot is None else pilot
 
     def __enter__(self):
         return self
@@ -33,7 +36,7 @@ class FakeProbe:
 
     def query(self, command, payload=b'', timeout=16):
         self.calls.append((command, payload))
-        versions = {38: b.SOC, 4627: b.PILOT, 204: 'other' if self.incompatible else b.SKU}
+        versions = {38: self.soc, 4627: self.pilot, 204: 'other' if self.incompatible else self.sku}
         return {'status': 1 if self.fail == command else 0,
                 'payload': versions.get(command, '').encode()}
 
@@ -43,6 +46,20 @@ class FakeProbe:
 
 
 class BackendTests(unittest.TestCase):
+    def test_second_one_pro_sku_uses_same_update_flow(self):
+        probe = FakeProbe(sku='X1112011')
+        _, events = self.run_update(probe)
+        self.assertEqual(events[-1][1], 100)
+        self.assertEqual(sum(c == 4628 for c, _ in probe.calls), 1)
+
+    def test_allowlist_does_not_accept_other_skus_or_versions(self):
+        for args in ({'sku':'X1112012'}, {'sku':'X1112011','soc':'wrong'},
+                     {'sku':'X1112011','pilot':'wrong'}, {'sku':'X1112010','pilot':'wrong'}):
+            with self.subTest(args=args):
+                probe = FakeProbe(**args)
+                with self.assertRaises(RuntimeError): self.run_update(probe)
+                self.assertFalse(any(c in (4628,4629,4630) for c,_ in probe.calls))
+
     def run_update(self, probe):
         data = bytes(range(256))*5
         expected = {name: hashlib.sha256(b'expected').hexdigest() for name in b.FILES}
