@@ -41,7 +41,8 @@ class Probe:
         # Windows HIDAPI pads to OutputReportByteLength and returns that padded
         # size (1025 on these glasses). Delivery is verified by the reply below.
         if written < len(frame) + 1:
-            raise IOError(f'Incomplete HID write: {written}/{len(frame) + 1}')
+            detail = self.device.error() if written < 0 else 'short write'
+            raise IOError(f'HID command 0x{command:04x}: write {written}/{len(frame) + 1}; {detail}')
         deadline = time.monotonic() + timeout
         ignored = 0
         while time.monotonic() < deadline:
@@ -100,7 +101,12 @@ class Probe:
             result['bytes'] = total
             result['sha256'] = hashlib.sha256(result['data']).hexdigest()
         finally:
-            result['finish_status'] = self.query(209)['status']
+            original_error = sys.exc_info()[1]
+            try:
+                result['finish_status'] = self.query(209)['status']
+            except Exception:
+                if original_error is None:
+                    raise
         return result
 
 

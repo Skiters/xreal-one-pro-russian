@@ -112,6 +112,29 @@ def verify_files(probe, expected, emit):
                 raise RuntimeError('Проверка установленного файла не пройдена: '+name)
 
 
+def verify_selected(selected, expected, emit, probe_factory=SelectedProbe, sleep=time.sleep):
+    # Only read-back is retryable. Restart the entire export session on a fresh
+    # handle, never replay an individual chunk (the protocol has no offsets).
+    for attempt in range(3):
+        try:
+            with probe_factory(selected) as probe:
+                identity(probe)
+                verify_files(probe, expected, emit)
+            return
+        except (OSError, TimeoutError):
+            if attempt == 2:
+                raise
+            emit('USB-соединение прервалось. Повторная проверка файлов без записи…', 89)
+            sleep(5)
+
+
+def verify_only(selected, emit):
+    emit('Проверка встроенного пакета…', 0)
+    _, expected = load_package()
+    verify_selected(selected, expected, emit)
+    emit('Готово. Все пять файлов совпадают с прошивкой. Можно отключить очки.', 100)
+
+
 def update(selected, emit, probe_factory=SelectedProbe, package_loader=load_package, sleep=time.sleep):
     emit('Проверка встроенной прошивки…', 0)
     data, expected = package_loader()
@@ -121,6 +144,8 @@ def update(selected, emit, probe_factory=SelectedProbe, package_loader=load_pack
         emit('Начинается запись. Не отключайте очки.', 1)
         transmit(probe, data, emit)
     emit('Ожидание перезапуска очков…', 89)
+    # The old process can still answer immediately after accepting finish.
+    sleep(5)
     for attempt in range(30):
         try:
             with probe_factory(selected) as probe:
@@ -131,6 +156,10 @@ def update(selected, emit, probe_factory=SelectedProbe, package_loader=load_pack
                 raise RuntimeError('Пакет передан, но очки не вернулись для проверки. '
                                    'Успех установки не подтверждён. Переподключите очки и проверьте меню.')
             sleep(2)
-    with probe_factory(selected) as probe:
-        verify_files(probe, expected, emit)
+    try:
+        verify_selected(selected, expected, emit, probe_factory=probe_factory, sleep=sleep)
+    except Exception as e:
+        raise RuntimeError('Очки приняли пакет, но проверка файлов не завершена. '
+                           'Переподключите очки и нажмите «Проверить без записи». '
+                           'Повторная прошивка пока не нужна. Причина: '+str(e)) from e
     emit('Готово. Файлы проверены. Можно отключить очки и проверить русское меню.', 100)

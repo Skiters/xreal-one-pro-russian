@@ -19,9 +19,9 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One Pro · Русское меню · v0.1.1')
-        root.geometry('720x510')
-        root.minsize(640, 490)
+        root.title('XREAL One Pro · Русское меню · v0.1.2')
+        root.geometry('720x570')
+        root.minsize(640, 550)
         root.protocol('WM_DELETE_WINDOW', self.close)
         style = ttk.Style()
         style.theme_use('vista' if 'vista' in style.theme_names() else 'clam')
@@ -48,6 +48,8 @@ class App:
                   foreground='#6b4c16', wraplength=640).pack(anchor='w', pady=(10, 14))
         self.install_button = ttk.Button(frame, text='2. Установить русскую прошивку', command=self.start, state='disabled')
         self.install_button.pack(anchor='w')
+        self.verify_button = ttk.Button(frame, text='Проверить без записи', command=lambda: self.start(verify_only=True), state='disabled')
+        self.verify_button.pack(anchor='w', pady=(6, 0))
         self.progress = ttk.Progressbar(frame, maximum=100)
         self.progress.pack(fill='x', pady=(18, 10))
         self.status = tk.StringVar(value='Поиск подключённых очков…')
@@ -57,6 +59,7 @@ class App:
 
     def selected(self, _event=None):
         self.install_button.configure(state='normal' if self.combo.current() >= 0 and not self.busy else 'disabled')
+        self.verify_button.configure(state='normal' if self.combo.current() >= 0 and not self.busy else 'disabled')
 
     def refresh(self):
         if self.busy:
@@ -68,29 +71,31 @@ class App:
                                     for i, d in enumerate(self.found)]
             self.combo.set('')
             self.install_button.configure(state='disabled')
+            self.verify_button.configure(state='disabled')
             self.status.set('Выберите очки в списке.' if self.found else
                             'Очки не найдены. Подключите кабель с передачей данных и нажмите «Обновить список».')
         except Exception as e:
             self.status.set('Не удалось получить список USB-устройств: '+str(e))
 
-    def start(self):
+    def start(self, verify_only=False):
         index = self.combo.current()
         if self.busy or index < 0:
             return
         selected = self.found[index].copy()
         self.busy = True
-        for widget in [self.install_button, self.refresh_button, self.combo]:
+        for widget in [self.install_button, self.verify_button, self.refresh_button, self.combo]:
             widget.configure(state='disabled')
         self.progress['value'] = 0
         self.status.set('Подготовка…')
-        threading.Thread(target=self.worker, args=(selected,), daemon=False).start()
+        threading.Thread(target=self.worker, args=(selected, verify_only), daemon=False).start()
 
-    def worker(self, selected):
+    def worker(self, selected, verify_only=False):
         # Hold the machine awake during transmission and read-back, on this same thread.
         try:
             if sys.platform == 'win32':
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
-            backend.update(selected, lambda text, percent: self.events.put(('progress', text, percent)))
+            action = backend.verify_only if verify_only else backend.update
+            action(selected, lambda text, percent: self.events.put(('progress', text, percent)))
             self.events.put(('done', '', 100))
         except Exception as e:
             log = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater' / 'last-error.txt'
@@ -132,9 +137,9 @@ class App:
 
 
 def main():
-    if '--self-test' in sys.argv or '--check-device' in sys.argv:
-        # Packaged-runtime smoke test, never opens or writes a HID device.
-        mode = '--check-device' if '--check-device' in sys.argv else '--self-test'
+    if any(flag in sys.argv for flag in ('--self-test', '--check-device', '--verify-device')):
+        # Diagnostics never issue firmware-writing commands.
+        mode = next(flag for flag in ('--verify-device', '--check-device', '--self-test') if flag in sys.argv)
         dest = Path(sys.argv[sys.argv.index(mode)+1])
         data, expected = backend.load_package()
         root = tk.Tk()
@@ -145,11 +150,13 @@ def main():
         count = len(found)
         root.destroy()
         device_identity = None
-        if mode == '--check-device':
+        if mode in ('--check-device', '--verify-device'):
             if count != 1:
                 raise RuntimeError('Read-only check requires exactly one device')
             with backend.SelectedProbe(found[0]) as probe:
                 device_identity = backend.identity(probe)
+            if mode == '--verify-device':
+                backend.verify_selected(found[0], expected, lambda *_: None)
         dest.write_text(json.dumps({'ok': True, 'bytes': len(data), 'verified_files': len(expected),
                                     'hid_devices': count, 'tk_loaded': True, 'firmware_writes': 0,
                                     'device_identity': device_identity}), encoding='utf-8')

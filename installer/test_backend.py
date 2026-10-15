@@ -82,6 +82,41 @@ class BackendTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_update(FakeProbe(corrupt=True))
 
+    def test_readback_disconnect_reopens_without_reflashing(self):
+        probe = FakeProbe()
+        original = probe.export
+        attempts = []
+        def export(*args, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise OSError('device restarting')
+            return original(*args, **kwargs)
+        probe.export = export
+        _, events = self.run_update(probe)
+        self.assertEqual(sum(c == 4628 for c, _ in probe.calls), 1)
+        self.assertEqual(sum(c == 4630 for c, _ in probe.calls), 1)
+        self.assertEqual(len(attempts), 6)
+        self.assertEqual(events[-1][1], 100)
+
+    def test_persistent_readback_disconnect_is_bounded(self):
+        from unittest.mock import Mock
+        probe = FakeProbe()
+        probe.export = Mock(side_effect=OSError('disconnected'))
+        with self.assertRaisesRegex(RuntimeError, 'Проверить без записи'):
+            self.run_update(probe)
+        self.assertEqual(probe.export.call_count, 3)
+        self.assertEqual(sum(c == 4628 for c, _ in probe.calls), 1)
+
+    def test_export_preserves_original_failure(self):
+        probe = b.Probe()
+        def query(command, *args, **kwargs):
+            if command == 207:
+                return {'status': 0, 'payload': b''}
+            raise OSError('read failed' if command == 208 else 'cleanup failed')
+        probe.query = query
+        with self.assertRaisesRegex(OSError, 'read failed'):
+            probe.export('/test')
+
     def test_corrupt_package_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d)/'bad.bin'
