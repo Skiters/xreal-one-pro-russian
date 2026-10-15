@@ -19,16 +19,38 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One Pro · Русское меню · v0.1.2')
-        root.geometry('720x570')
-        root.minsize(640, 550)
+        root.title('XREAL One Pro · Русское меню · v0.1.3')
+        scale = float(root.tk.call('tk', 'scaling')) / (96 / 72)
+        left, top, right, bottom = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+        if sys.platform == 'win32':
+            from ctypes.wintypes import RECT
+            area = RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(area), 0):
+                left, top, right, bottom = area.left, area.top, area.right, area.bottom
+        width = min(round(720 * scale), max(200, right-left-40))
+        height = min(round(640 * scale), max(180, bottom-top-80))
+        root.geometry(f'{width}x{height}+{left+20}+{top+20}')
+        root.minsize(min(320, width), min(220, height))
         root.protocol('WM_DELETE_WINDOW', self.close)
         style = ttk.Style()
         style.theme_use('vista' if 'vista' in style.theme_names() else 'clam')
         style.configure('TLabel', font=('Segoe UI', 11))
         style.configure('TButton', font=('Segoe UI', 11), padding=8)
-        frame = ttk.Frame(root, padding=28)
-        frame.pack(fill='both', expand=True)
+        shell = ttk.Frame(root)
+        shell.pack(fill='both', expand=True)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        self.canvas = tk.Canvas(shell, highlightthickness=0, yscrollincrement=20,
+                                background=style.lookup('TFrame', 'background') or '#f0f0f0')
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        self.vscroll = ttk.Scrollbar(shell, orient='vertical', command=self.canvas.yview)
+        self.vscroll.grid(row=0, column=1, sticky='ns')
+        self.hscroll = ttk.Scrollbar(shell, orient='horizontal', command=self.canvas.xview)
+        self.hscroll.grid(row=1, column=0, sticky='ew')
+        self.canvas.configure(yscrollcommand=self.vscroll.set, xscrollcommand=self.hscroll.set)
+        frame = ttk.Frame(self.canvas, padding=20)
+        self.content = frame
+        self.content_window = self.canvas.create_window(0, 0, window=frame, anchor='nw')
         ttk.Label(frame, text='Русское меню для XREAL One Pro', font=('Segoe UI', 19, 'bold')).pack(anchor='w')
         ttk.Label(frame, text='Подключите очки по USB → выберите устройство → установите прошивку.',
                   wraplength=650).pack(anchor='w', pady=(10, 18))
@@ -36,26 +58,70 @@ class App:
         row = ttk.Frame(frame)
         row.pack(fill='x', pady=(8, 16))
         self.combo = ttk.Combobox(row, state='readonly', font=('Segoe UI', 11))
-        self.combo.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        self.combo.pack(fill='x')
         self.combo.bind('<<ComboboxSelected>>', self.selected)
         self.refresh_button = ttk.Button(row, text='Обновить список', command=self.refresh)
-        self.refresh_button.pack(side='right')
+        self.refresh_button.pack(anchor='w', pady=(6, 0))
         ttk.Label(frame, text='Русский заменит польский язык. Английский сохранится.\n'
                   'Прошивка встроена в приложение. Интернет для установки не нужен.',
                   wraplength=640).pack(anchor='w')
         ttk.Label(frame, text='Экспериментальная сборка для Pilot 1.9.1.20260914175625.\n'
                   'Закройте вкладку обновления XREAL и не отключайте кабель во время записи.',
                   foreground='#6b4c16', wraplength=640).pack(anchor='w', pady=(10, 14))
-        self.install_button = ttk.Button(frame, text='2. Установить русскую прошивку', command=self.start, state='disabled')
+        self.install_button = ttk.Button(frame, text='2. Установить прошивку', command=self.start, state='disabled')
         self.install_button.pack(anchor='w')
         self.verify_button = ttk.Button(frame, text='Проверить без записи', command=lambda: self.start(verify_only=True), state='disabled')
         self.verify_button.pack(anchor='w', pady=(6, 0))
         self.progress = ttk.Progressbar(frame, maximum=100)
         self.progress.pack(fill='x', pady=(18, 10))
         self.status = tk.StringVar(value='Поиск подключённых очков…')
-        ttk.Label(frame, textvariable=self.status, wraplength=640).pack(anchor='w')
+        self.status_label = ttk.Label(frame, textvariable=self.status, wraplength=640)
+        self.status_label.pack(anchor='w')
+        self.labels = [child for child in frame.winfo_children() if isinstance(child, ttk.Label)]
+        self.canvas.bind('<Configure>', self.layout)
+        frame.bind('<Configure>', self.content_changed)
+        root.bind('<MouseWheel>', self.mousewheel)
+        root.bind('<FocusIn>', self.reveal_focus)
         root.after(100, self.refresh)
         root.after(100, self.poll)
+
+    def layout(self, _event=None):
+        available = max(1, self.canvas.winfo_width())
+        # On unusually narrow/high-DPI displays keep every control reachable
+        # through horizontal scrolling instead of clipping a button.
+        minimum = max(button.winfo_reqwidth() for button in
+                      (self.install_button, self.verify_button, self.refresh_button)) + 40
+        width = max(available, minimum)
+        self.canvas.itemconfigure(self.content_window, width=width)
+        for label in self.labels:
+            label.configure(wraplength=max(80, width-40))
+        if width > available:
+            self.hscroll.grid()
+        else:
+            self.hscroll.grid_remove()
+            self.canvas.xview_moveto(0)
+
+    def content_changed(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox(self.content_window))
+
+    def mousewheel(self, event):
+        if self.content.winfo_height() > self.canvas.winfo_height() and event.delta:
+            units = max(1, abs(event.delta)//120)
+            self.canvas.yview_scroll(-units if event.delta > 0 else units, 'units')
+        return 'break'
+
+    def reveal_focus(self, event):
+        widget = event.widget
+        if widget == self.root or not str(widget).startswith(str(self.content)+'.'):
+            return
+        self.root.update_idletasks()
+        y = widget.winfo_rooty()-self.content.winfo_rooty()
+        visible_top = self.canvas.canvasy(0)
+        visible_height = self.canvas.winfo_height()
+        if y < visible_top:
+            self.canvas.yview_moveto(max(0, y-8)/max(1, self.content.winfo_height()))
+        elif y+widget.winfo_height() > visible_top+visible_height:
+            self.canvas.yview_moveto((y+widget.winfo_height()+8-visible_height)/max(1, self.content.winfo_height()))
 
     def selected(self, _event=None):
         self.install_button.configure(state='normal' if self.combo.current() >= 0 and not self.busy else 'disabled')
