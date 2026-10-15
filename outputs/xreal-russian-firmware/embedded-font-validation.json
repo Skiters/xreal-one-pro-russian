@@ -1,7 +1,14 @@
 {
   "actual_arm64_renderer_emulated": true,
-  "font_character_cases": 2145,
-  "missing_glyph_cases_repaired": 868,
-  "all_required_characters_found": true,
-  "existing_character_metrics_unchanged": true
+  "unified_font_character_cases": 2490,
+  "bitmap_cases": 2460,
+  "stock_fallback_cases": 75,
+  "external_donor_outline_and_metric_cases": 332,
+  "all_characters_fit_line_boxes": true,
+  "latin_and_cyrillic_resolve_same_primary_font": true,
+  "machine_code_unchanged": true,
+  "device_installation": "confirmed_by_user",
+  "visual_on_device": "user_confirmed_working_well",
+  "full_menu_widget_widths": "User reported successful operation; exhaustive per-widget measurements not performed",
+  "confirmation_date": "2026-10-15"
 }

@@ -1,8 +1,8 @@
 {
   "file": "XREAL_One_Pro_Pilot_RU.bin",
-  "bytes": 88290636,
-  "sha256": "135ff3fee312361323af11e03dac7edf779cf4386cd1a858f767e1320b3e988e",
-  "container_crc": "9b1949dd",
+  "bytes": 88321128,
+  "sha256": "258ecdb3a9892c7a2bf700c4f0fbccf52ced8915081c0109beb08c59c60418ec",
+  "container_crc": "2ee6d2a6",
   "project_code": 5376,
   "component_type": 4,
   "original_header_identity_preserved": true,

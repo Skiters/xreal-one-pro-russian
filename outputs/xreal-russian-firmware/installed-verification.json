@@ -1,38 +1,7 @@
 {
-  "verified_utc": "2026-10-15T13:11:32.755924+00:00",
-  "files": [
-    {
-      "path": "/usrdata/pilot/resource/osd_language.csv",
-      "bytes": 265432,
-      "sha256": "8625b495771b2aef04fab05b7243ba725a6843a16eb4f61e4aed550ea6795828",
-      "matches_build": true
-    },
-    {
-      "path": "/usrdata/pilot/resource/font/MiSans_Medium_Multi.ttf",
-      "bytes": 933992,
-      "sha256": "712561b3ac4ccba8fe0008214c55a2a7c8b3d833b27f2e0f18dccf675672e109",
-      "matches_build": true
-    },
-    {
-      "path": "/usrdata/pilot/resource/font/MiSans_Bold_Multi.ttf",
-      "bytes": 924300,
-      "sha256": "05e6bc5b191bbf090949b9ba5b7ef5423c1414e71118a2a57769325a85d21e22",
-      "matches_build": true
-    },
-    {
-      "path": "/usrdata/pilot/checksums.sha256",
-      "bytes": 6162,
-      "sha256": "cf091dd3179092f4bc085a74b178ff621522d96d538e05342f6774e7b1aea99d",
-      "matches_build": true
-    },
-    {
-      "path": "/usrdata/pilot/bin/libnr_osd.so",
-      "bytes": 81816760,
-      "sha256": "798914225fd4649546b866c7154237b56a49f9e46206b63ec6c9239cdf8fddde",
-      "matches_build": true
-    }
-  ],
-  "pilot_version": "1.9.1.20260914175625",
-  "all_modified_files_read_back_and_verified": true,
-  "visual_on_device_confirmation": "pending_user_check"
+  "package_sha256": "258ecdb3a9892c7a2bf700c4f0fbccf52ced8915081c0109beb08c59c60418ec",
+  "installation": "user_confirmed",
+  "visual_on_device_confirmation": "user_reported_everything_works_well",
+  "confirmation_date": "2026-10-15",
+  "automated_readback_report_for_this_build": "not_collected_in_this_session"
 }

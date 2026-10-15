@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'work'))
 from xreal_usb_probe import Probe, ALLOWED
 
 ALLOWED.update({4628, 4629, 4630})
-FIRMWARE_SHA = '135ff3fee312361323af11e03dac7edf779cf4386cd1a858f767e1320b3e988e'
+FIRMWARE_SHA = '258ecdb3a9892c7a2bf700c4f0fbccf52ced8915081c0109beb08c59c60418ec'
 SOC = '15.1.03.603_20260914'
 PILOT = '1.9.1.20260914175625'
 SKU = 'X1112010'

@@ -2,33 +2,38 @@
   "component": "Pilot",
   "base_version": "1.9.1.20260914175625",
   "language_slot": "polish",
-  "menu_name": "Русский",
-  "english_preserved": true,
-  "czech_restored_to_stock": true,
-  "changed_files": [
-    "pilot/resource/osd_language.csv",
-    "pilot/resource/font/MiSans_Medium_Multi.ttf",
-    "pilot/resource/font/MiSans_Bold_Multi.ttf",
-    "pilot/bin/libnr_osd.so",
-    "pilot/checksums.sha256"
-  ],
-  "font_validation": [
-    {
-      "weight": "Medium",
-      "added_codepoints": 68,
-      "original_codepoints_preserved": 4161,
-      "existing_glyph_outlines_and_metrics_unchanged": true
-    },
-    {
-      "weight": "Bold",
-      "added_codepoints": 68,
-      "original_codepoints_preserved": 4161,
-      "existing_glyph_outlines_and_metrics_unchanged": true
-    }
-  ],
+  "english_text_preserved": true,
+  "font_strategy": "unified_primary_with_stock_fallback",
+  "unified_characters_per_font": 166,
+  "embedded_fonts": 15,
   "zip_integrity": true,
   "all_vendor_file_checksums_verified": true,
   "unmodified_files_byte_identical": true,
-  "device_installation": "completed_and_readback_verified",
-  "embedded_fonts_extended": 15
+  "files": [
+    {
+      "path": "pilot/resource/osd_language.csv",
+      "sha256": "8625b495771b2aef04fab05b7243ba725a6843a16eb4f61e4aed550ea6795828",
+      "bytes": 265432
+    },
+    {
+      "path": "pilot/resource/font/MiSans_Medium_Multi.ttf",
+      "sha256": "1f71dcf8c218c38e2afe85b424827adc55e46becf5ee8ca683f80edd10b3775c",
+      "bytes": 946216
+    },
+    {
+      "path": "pilot/resource/font/MiSans_Bold_Multi.ttf",
+      "sha256": "2fd489e24749b4ed8322250ed443d69375ed404c32ca2e6cd47f172ef0cb70ff",
+      "bytes": 936304
+    },
+    {
+      "path": "pilot/bin/libnr_osd.so",
+      "sha256": "f208a9594bf89a91fa714200c8c188c708f3f295164ba916dc19c37dfd5e1dc5",
+      "bytes": 81878200
+    },
+    {
+      "path": "pilot/checksums.sha256",
+      "sha256": "0610fe769d96e41ee0348531336096f8284cb810edee83fdf4f6db02abc96ba4",
+      "bytes": 6162
+    }
+  ]
 }

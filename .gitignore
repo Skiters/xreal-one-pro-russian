@@ -9,6 +9,9 @@
 !/outputs/
 /work/*
 !/work/build_russian_pilot.py
+!/work/build_uniform_fonts.py
+!/work/test_uniform_fonts.py
+!/work/pack_uniform_pilot.cjs
 !/work/flash_russian_pilot.py
 !/work/pack_pilot.cjs
 !/work/patch_embedded_fonts.py
@@ -27,6 +30,7 @@
 !/outputs/xreal-russian-firmware/
 /outputs/xreal-russian-firmware/*
 !/outputs/xreal-russian-firmware/README.txt
+!/outputs/xreal-russian-firmware/font-preview.png
 !/outputs/xreal-russian-firmware/package-manifest.json
 !/outputs/xreal-russian-firmware/build-validation.json
 !/outputs/xreal-russian-firmware/embedded-font-validation.json
