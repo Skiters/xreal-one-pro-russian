@@ -1,0 +1,34 @@
+{
+  "component": "Pilot",
+  "base_version": "1.9.1.20260914175625",
+  "language_slot": "polish",
+  "menu_name": "Русский",
+  "english_preserved": true,
+  "czech_restored_to_stock": true,
+  "changed_files": [
+    "pilot/resource/osd_language.csv",
+    "pilot/resource/font/MiSans_Medium_Multi.ttf",
+    "pilot/resource/font/MiSans_Bold_Multi.ttf",
+    "pilot/bin/libnr_osd.so",
+    "pilot/checksums.sha256"
+  ],
+  "font_validation": [
+    {
+      "weight": "Medium",
+      "added_codepoints": 68,
+      "original_codepoints_preserved": 4161,
+      "existing_glyph_outlines_and_metrics_unchanged": true
+    },
+    {
+      "weight": "Bold",
+      "added_codepoints": 68,
+      "original_codepoints_preserved": 4161,
+      "existing_glyph_outlines_and_metrics_unchanged": true
+    }
+  ],
+  "zip_integrity": true,
+  "all_vendor_file_checksums_verified": true,
+  "unmodified_files_byte_identical": true,
+  "device_installation": "completed_and_readback_verified",
+  "embedded_fonts_extended": 15
+}

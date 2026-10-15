@@ -1,0 +1,17 @@
+{
+  "file": "XREAL_One_Pro_Pilot_RU.bin",
+  "bytes": 88290636,
+  "sha256": "135ff3fee312361323af11e03dac7edf779cf4386cd1a858f767e1320b3e988e",
+  "container_crc": "9b1949dd",
+  "project_code": 5376,
+  "component_type": 4,
+  "original_header_identity_preserved": true,
+  "usb_endpoint_bytes": 512,
+  "usb_chunk_bytes": 490,
+  "commands": {
+    "start": 4628,
+    "transmit": 4629,
+    "finish": 4630
+  },
+  "source": "outputs/xreal-firmware-cache/type4_1.9.1.2026091417562520260914175902.bin"
+}

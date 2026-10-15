@@ -1,0 +1,7 @@
+{
+  "actual_arm64_renderer_emulated": true,
+  "font_character_cases": 2145,
+  "missing_glyph_cases_repaired": 868,
+  "all_required_characters_found": true,
+  "existing_character_metrics_unchanged": true
+}

@@ -1,0 +1,9 @@
+{
+  "post_restart_missing_glyph_warnings": 0,
+  "menu_initialized": true,
+  "language_types_observed": [
+    "9"
+  ],
+  "observation": "Fresh application startup log; full interactive menu walkthrough pending user confirmation",
+  "files_readback_verified": true
+}
