@@ -4,9 +4,9 @@
 
 ## Скачать
 
-**[XREAL-Russian-Updater.exe — v0.3.0](https://github.com/Skiters/xreal-one-pro-russian/releases/tag/v0.3.0-windows)**
+**[Скачать XREAL-Russian-Updater.exe — v0.3.0](https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.3.0-windows/XREAL-Russian-Updater.exe)**
 
-На странице выпуска находится EXE и его SHA256. Файл запускается без Python и отдельной распаковки прошивок. Windows может предупредить о неподписанном издателе.
+[Страница выпуска и SHA256](https://github.com/Skiters/xreal-one-pro-russian/releases/tag/v0.3.0-windows). Файл запускается без Python и отдельной распаковки прошивок. Windows может предупредить о неподписанном издателе.
 
 ## Выбор прошивки
 
