@@ -33,27 +33,23 @@ class Firmware:
     files: tuple[str, ...]
 
 
-STANDARD = Firmware('standard', 'XREAL_One_Pro_Pilot_RU.bin', FIRMWARE_SHA, PILOT, 0x69,
+STANDARD = Firmware('standard', 'XREAL-One-RU-Pilot1.9.1.bin', FIRMWARE_SHA, PILOT, 0x69,
                     SUPPORTED_SKUS, tuple(FILES))
 EXPERIMENTAL = Firmware(
-    'experimental', 'XREAL-Pilot2-RU-Hebe-Within-Limit.bin',
-    '2230136051f41b5cf7a753ea47b51b502df1fb743f5049a8c9443fb9f99499c3',
+    'experimental', 'XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin',
+    '1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0',
     PILOT_2, 0x66, frozenset({'X1112010'}),
     ('pilot/bin/pilot', 'pilot/bin/libnr_image_post_processor.so',
      'pilot/bin/libxreal_cpu_adapter.so', 'pilot/bin/libnr_osd.so',
      'pilot/conf/pilot_default_config.json', 'pilot/conf/pilot_default_config_gina.json',
      'pilot/conf/pilot_default_config_hebe.json', 'pilot/resource/lut_3d_ai_hdr.cube',
      'pilot/checksums.sha256'))
-REAL3D = Firmware(
-    'real3d', 'XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin',
-    '1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0',
-    PILOT_2, 0x66, frozenset({'X1112010'}), EXPERIMENTAL.files)
-FIRMWARES = {firmware.key: firmware for firmware in (STANDARD, EXPERIMENTAL, REAL3D)}
+FIRMWARES = {firmware.key: firmware for firmware in (STANDARD, EXPERIMENTAL)}
 ACCEPTED_PILOT = frozenset({'1.9.1.20260914175625', PILOT_2})
 
 
 def devices():
-    return [d for d in hid.enumerate(0x3318, 0x0436)
+    return [d for pid in (0x0436, 0x0438) for d in hid.enumerate(0x3318, pid)
             if d['interface_number'] == 0 and d['usage_page'] == 0xff00]
 
 
@@ -66,6 +62,8 @@ class SelectedProbe(Probe):
         matches = [d for d in devices() if d['path'] == self.selected['path']]
         if len(matches) != 1:
             raise RuntimeError('Выбранные очки отключены. Подключите их и обновите список.')
+        if self.selected.get('product_id') != matches[0].get('product_id'):
+            raise RuntimeError('Модель USB-устройства изменилась. Выберите очки заново.')
         serial = self.selected.get('serial_number')
         if serial and matches[0].get('serial_number') != serial:
             raise RuntimeError('Подключено другое устройство. Выберите очки заново.')
@@ -89,28 +87,33 @@ def checked(probe, command, payload=b'', timeout=16):
 def identity(probe, firmware=STANDARD):
     actual = tuple(checked(probe, cmd, payload).rstrip(b'\0').decode('utf-8')
                    for cmd, payload in [(38, b''), (4627, b'\x02'), (204, b'')])
+    pid = getattr(probe, 'selected', {}).get('product_id', 0x0436)
+    one = pid == 0x0438
     supported_current = (actual[1] in ACCEPTED_PILOT and
                          (actual[1] != PILOT_2 or actual[2] == 'X1112010'))
-    if actual[0] != SOC or not supported_current or actual[2] not in firmware.skus:
+    supported_model = ((one and firmware is STANDARD and actual[1] == PILOT) or
+                       (pid == 0x0436 and actual[2] in firmware.skus))
+    if actual[0] != SOC or not supported_current or not supported_model:
         raise RuntimeError('Эта сборка не подходит к версии или модели очков. '
-                           f'Обнаружены: SoC {actual[0]}, Pilot {actual[1]}, SKU {actual[2]}. '
-                           f'Нужны: {SOC}, Pilot 1.9.1 или 2.0.0, '
-                           f'SKU из списка: {", ".join(sorted(firmware.skus))}. Запись не начата.')
+                           f'Обнаружены: USB PID {pid:04x}, SoC {actual[0]}, '
+                           f'Pilot {actual[1]}, SKU {actual[2]}. '
+                           'Для One нужен Pilot 1.9.1 и русский BIN; для One Pro '
+                           'требуется поддерживаемый SKU и версия Pilot. Запись не начата.')
     return actual
 
 
 def firmware_path(firmware=STANDARD):
     if getattr(sys, 'frozen', False):
-        return Path(sys._MEIPASS) / firmware.filename
-    folder = ('xreal-russian-firmware' if firmware is STANDARD else
-              'xreal-pilot2-real3d-cpu' if firmware is REAL3D else 'xreal-pilot2-hebe')
-    return Path(__file__).resolve().parents[1] / 'outputs' / folder / firmware.filename
+        return Path(sys.executable).resolve().parent / firmware.filename
+    folder = 'xreal-russian-firmware' if firmware is STANDARD else 'xreal-pilot2-real3d-cpu'
+    filename = 'XREAL_One_Pro_Pilot_RU.bin' if firmware is STANDARD else firmware.filename
+    return Path(__file__).resolve().parents[1] / 'outputs' / folder / filename
 
 
 def load_package(path=None, firmware=STANDARD):
-    data = (path or firmware_path(firmware)).read_bytes()
+    data = Path(path or firmware_path(firmware)).read_bytes()
     if hashlib.sha256(data).hexdigest() != firmware.sha256:
-        raise RuntimeError('Встроенная прошивка повреждена. Загрузите приложение заново.')
+        raise RuntimeError('Неподдерживаемый или повреждённый BIN. Выберите файл из ZIP выпуска.')
     if (int.from_bytes(data[4:8], 'little') != len(data)-8 or
             int.from_bytes(data[8:12], 'little') != 0x1500 or
             int.from_bytes(data[12:16], 'little') != 4 or
@@ -121,6 +124,15 @@ def load_package(path=None, firmware=STANDARD):
             raise RuntimeError('Архив прошивки повреждён.')
         expected = {name: hashlib.sha256(z.read(name)).hexdigest() for name in firmware.files}
     return data, expected
+
+
+def identify_package(path):
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    firmware = next((item for item in FIRMWARES.values() if item.sha256 == digest), None)
+    if firmware is None:
+        raise RuntimeError('Неподдерживаемый BIN. Выберите один из двух файлов ZIP выпуска.')
+    load_package(path, firmware)
+    return firmware
 
 
 def transmit(probe, data, emit):
@@ -169,17 +181,17 @@ def verify_selected(selected, expected, emit, probe_factory=SelectedProbe, sleep
             sleep(5)
 
 
-def verify_only(selected, emit, firmware=STANDARD):
-    emit('Проверка встроенного пакета…', 0)
-    _, expected = load_package(firmware=firmware)
+def verify_only(selected, emit, firmware=STANDARD, path=None):
+    emit('Проверка выбранного пакета…', 0)
+    _, expected = load_package(path, firmware=firmware)
     verify_selected(selected, expected, emit, firmware=firmware)
     emit('Готово. Все проверяемые файлы совпадают с прошивкой. Можно отключить очки.', 100)
 
 
 def update(selected, emit, probe_factory=SelectedProbe, package_loader=None, sleep=time.sleep,
-           firmware=STANDARD):
-    emit('Проверка встроенной прошивки…', 0)
-    data, expected = (package_loader or (lambda: load_package(firmware=firmware)))()
+           firmware=STANDARD, path=None):
+    emit('Проверка выбранной прошивки…', 0)
+    data, expected = (package_loader or (lambda: load_package(path, firmware=firmware)))()
     with probe_factory(selected) as probe:
         emit('Проверка модели и версии очков…', 0)
         identity(probe, firmware)

@@ -64,26 +64,34 @@ class BackendTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): self.run_update(probe)
                 self.assertFalse(any(c in (4628,4629,4630) for c,_ in probe.calls))
 
-    def run_update(self, probe, firmware=b.STANDARD):
+    def run_update(self, probe, firmware=b.STANDARD, product_id=0x0436):
         data = bytes(range(256))*5
         expected = {name: hashlib.sha256(b'expected').hexdigest() for name in firmware.files}
         events = []
-        b.update({'path': b'chosen'}, lambda *args: events.append(args),
+        probe.selected = {'product_id': product_id}
+        b.update({'path': b'chosen', 'product_id': product_id}, lambda *args: events.append(args),
                  probe_factory=lambda selected: probe, package_loader=lambda: (data, expected),
                  sleep=lambda _: None, firmware=firmware)
         return data, events
 
+    def test_one_pid_accepts_shared_pilot_only(self):
+        probe = FakeProbe(sku='ONE-DEVICE')
+        self.run_update(probe, b.STANDARD, product_id=0x0438)
+        self.assertEqual(sum(cmd == 4628 for cmd, _ in probe.calls), 1)
+        probe = FakeProbe(sku='ONE-DEVICE')
+        with self.assertRaises(RuntimeError):
+            self.run_update(probe, b.EXPERIMENTAL, product_id=0x0438)
+        self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
+
     def test_experimental_only_allows_verified_sku(self):
-        for firmware in (b.EXPERIMENTAL, b.REAL3D):
-            with self.subTest(firmware=firmware.key):
-                probe = FakeProbe(sku='X1112010', target_pilot=b.PILOT_2)
-                self.run_update(probe, firmware)
-                self.assertEqual(probe.pilot, b.PILOT_2)
-                for sku in ('X1112011', 'X1112012'):
-                    probe = FakeProbe(sku=sku, target_pilot=b.PILOT_2)
-                    with self.assertRaises(RuntimeError):
-                        self.run_update(probe, firmware)
-                    self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
+        probe = FakeProbe(sku='X1112010', target_pilot=b.PILOT_2)
+        self.run_update(probe, b.EXPERIMENTAL)
+        self.assertEqual(probe.pilot, b.PILOT_2)
+        for sku in ('X1112011', 'X1112012'):
+            probe = FakeProbe(sku=sku, target_pilot=b.PILOT_2)
+            with self.assertRaises(RuntimeError):
+                self.run_update(probe, b.EXPERIMENTAL)
+            self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
 
     def test_standard_can_replace_experimental(self):
         probe = FakeProbe(pilot=b.PILOT_2, target_pilot=b.PILOT)
@@ -96,7 +104,7 @@ class BackendTests(unittest.TestCase):
             self.run_update(probe, b.STANDARD)
         self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
 
-    def test_all_embedded_firmwares_validate(self):
+    def test_all_release_firmwares_validate(self):
         for firmware in b.FIRMWARES.values():
             with self.subTest(firmware=firmware.key):
                 data, expected = b.load_package(firmware=firmware)
@@ -176,6 +184,14 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 b.load_package(path)
 
+    def test_file_selection_requires_known_hash(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)/'unknown.bin'
+            path.write_bytes(b'unknown')
+            with self.assertRaisesRegex(RuntimeError, 'Неподдерживаемый BIN'):
+                b.identify_package(path)
+        self.assertIs(b.identify_package(b.firmware_path(b.STANDARD)), b.STANDARD)
+
     def test_selected_path_never_falls_back(self):
         with patch.object(b, 'devices', return_value=[{'path': b'other'}]), patch.object(b.hid, 'device') as device:
             with self.assertRaises(RuntimeError):
@@ -247,9 +263,9 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(str(app.install_button['state']), 'disabled')
                 app.combo.current(0)
                 app.selected()
-                self.assertEqual(str(app.install_button['state']), 'normal')
-                self.assertEqual(app.firmware_key.get(), 'standard')
-                app.firmware_key.set('experimental')
+                self.assertEqual(str(app.install_button['state']), 'disabled')
+                app.firmware = b.EXPERIMENTAL
+                app.firmware_path = b.firmware_path(b.EXPERIMENTAL)
                 app.firmware_changed()
                 self.assertIn('AI HDR', app.description['text'])
                 self.assertEqual(str(app.install_button['state']), 'normal')

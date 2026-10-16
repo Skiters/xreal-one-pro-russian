@@ -8,7 +8,7 @@ import sys
 import threading
 import traceback
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 import backend
 
@@ -19,7 +19,7 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One Pro · Русское меню · v0.4.0')
+        root.title('XREAL One / One Pro · Русское меню · v0.5.0')
         scale = float(root.tk.call('tk', 'scaling')) / (96 / 72)
         left, top, right, bottom = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
         if sys.platform == 'win32':
@@ -51,7 +51,7 @@ class App:
         frame = ttk.Frame(self.canvas, padding=20)
         self.content = frame
         self.content_window = self.canvas.create_window(0, 0, window=frame, anchor='nw')
-        ttk.Label(frame, text='Русское меню для XREAL One Pro', font=('Segoe UI', 19, 'bold')).pack(anchor='w')
+        ttk.Label(frame, text='Русское меню для XREAL One / One Pro', font=('Segoe UI', 19, 'bold')).pack(anchor='w')
         ttk.Label(frame, text='Подключите очки по USB → выберите устройство и прошивку → установите.',
                   wraplength=650).pack(anchor='w', pady=(10, 18))
         ttk.Label(frame, text='1. Выберите очки').pack(anchor='w')
@@ -62,22 +62,18 @@ class App:
         self.combo.bind('<<ComboboxSelected>>', self.selected)
         self.refresh_button = ttk.Button(row, text='Обновить список', command=self.refresh)
         self.refresh_button.pack(anchor='w', pady=(6, 0))
-        ttk.Label(frame, text='2. Выберите прошивку').pack(anchor='w', pady=(2, 8))
-        self.firmware_key = tk.StringVar(value='standard')
-        self.firmware_buttons = []
-        for key, title in (
-            ('standard', 'Обычная русская · Pilot 1.9.1'),
-            ('experimental', 'Экспериментальная One Pro+ · Pilot 2.0'),
-            ('real3d', 'Экспериментальная One Pro+ · Pilot 2.0 · Real3D'),
-        ):
-            button = ttk.Radiobutton(frame, text=title, value=key,
-                                     variable=self.firmware_key, command=self.firmware_changed)
-            button.pack(anchor='w', pady=(0, 5))
-            self.firmware_buttons.append(button)
+        ttk.Label(frame, text='2. Выберите BIN-файл прошивки из ZIP').pack(anchor='w', pady=(2, 8))
+        self.firmware = None
+        self.firmware_path = None
+        self.file_name = tk.StringVar(value='Файл не выбран')
+        ttk.Entry(frame, textvariable=self.file_name, state='readonly').pack(fill='x')
+        self.browse_button = ttk.Button(frame, text='Выбрать BIN…', command=self.choose_firmware)
+        self.browse_button.pack(anchor='w', pady=(6, 8))
         self.description = ttk.Label(frame, wraplength=640, justify='left')
         self.description.pack(anchor='w', pady=(5, 10))
-        ttk.Label(frame, text='Все прошивки встроены в приложение; интернет не нужен. Русский заменяет '
-                  'польский язык, английский сохраняется.', wraplength=640).pack(anchor='w')
+        ttk.Label(frame, text='EXE и BIN лежат отдельно в ZIP. Приложение принимает только проверенные '
+                  'русские BIN-файлы этого выпуска. Русский заменяет польский язык, английский сохраняется.',
+                  wraplength=640).pack(anchor='w')
         ttk.Label(frame, text='Закройте страницу обновления XREAL. Не отключайте USB-кабель во время записи.',
                   foreground='#6b4c16', wraplength=640).pack(anchor='w', pady=(10, 14))
         self.install_button = ttk.Button(frame, text='3. Установить выбранную прошивку', command=self.start, state='disabled')
@@ -103,7 +99,7 @@ class App:
         # On unusually narrow/high-DPI displays keep every control reachable
         # through horizontal scrolling instead of clipping a button.
         minimum = max(button.winfo_reqwidth() for button in
-                      (self.install_button, self.verify_button, self.refresh_button)) + 40
+                      (self.install_button, self.verify_button, self.refresh_button, self.browse_button)) + 40
         width = max(available, minimum)
         self.canvas.itemconfigure(self.content_window, width=width)
         for label in self.labels:
@@ -138,33 +134,48 @@ class App:
             self.canvas.yview_scroll(1, 'units')
 
     def selected(self, _event=None):
-        enabled = self.combo.current() >= 0 and self.firmware_key.get() in backend.FIRMWARES and not self.busy
+        enabled = self.combo.current() >= 0 and self.firmware is not None and not self.busy
         self.install_button.configure(state='normal' if enabled else 'disabled')
         self.verify_button.configure(state='normal' if enabled else 'disabled')
 
     def firmware_changed(self):
-        if self.firmware_key.get() == 'standard':
-            self.description.configure(text='Для One Pro X1112010 и X1112011. Переведено 437 строк; '
-                                       'единый шрифт в меню. Основана на штатной Pilot 1.9.1. '
-                                       'Русское меню проверено на X1112010.')
-        elif self.firmware_key.get() == 'experimental':
-            self.description.configure(text='Только для One Pro X1112010. Адаптация Pilot 2.0 от Pro+: '
-                                       'русское меню, AI HDR, работающие режимы «Чтение» и «Кино», '
-                                       'профиль яркости Hebe в пределах luminance 500. '
-                                       'Экспериментальная; ниты прибором не измерялись.')
-        else:
-            self.description.configure(text='Только для One Pro X1112010. Функции Pilot 2.0 выше плюс '
-                                       'экспериментальный Real3D с CPU-обработкой. На одном устройстве '
+        if self.firmware is backend.STANDARD:
+            self.description.configure(text='Русская Pilot 1.9.1 для XREAL One и One Pro. '
+                                       'Официальный пакет Pilot 1.9.1 для обеих моделей имеет один MD5. '
+                                       'Переведено 437 строк, шрифт согласован. На One перевод пока не проверен.')
+        elif self.firmware is backend.EXPERIMENTAL:
+            self.description.configure(text='Только для One Pro X1112010. Русское меню, AI HDR, '
+                                       'режимы «Чтение» и «Кино», профиль Hebe с luminance до 500 '
+                                       'и экспериментальный Real3D с CPU-обработкой. На одном устройстве '
                                        'глубина заметна слабо; измерено около 53–55 обработанных кадров/с. '
-                                       'Стабильные 60 кадров/с и совместимость с другими очками не подтверждены.')
+                                       'Стабильные 60 кадров/с не подтверждены.')
+        else:
+            self.description.configure(text='Выберите один из русских BIN-файлов ZIP выпуска.')
         self.selected()
+
+    def choose_firmware(self):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(parent=self.root, title='Выберите русскую прошивку',
+                                          filetypes=[('Прошивка XREAL', '*.bin')])
+        if not path:
+            return
+        try:
+            firmware = backend.identify_package(path)
+        except Exception as e:
+            messagebox.showerror('BIN не подходит', str(e), parent=self.root)
+            return
+        self.firmware = firmware
+        self.firmware_path = Path(path)
+        self.file_name.set(self.firmware_path.name)
+        self.firmware_changed()
 
     def refresh(self):
         if self.busy:
             return
         try:
             self.found = backend.devices()
-            self.combo['values'] = [f"XREAL One Pro — устройство {i+1}" +
+            self.combo['values'] = [f"XREAL {'One' if d.get('product_id') == 0x0438 else 'One Pro'} — устройство {i+1}" +
                                     (f" · {d['serial_number'][-6:]}" if d.get('serial_number') else '')
                                     for i, d in enumerate(self.found)]
             self.combo.set('')
@@ -181,22 +192,23 @@ class App:
             return
         selected = self.found[index].copy()
         self.busy = True
-        firmware = backend.FIRMWARES[self.firmware_key.get()]
+        firmware = self.firmware
+        path = self.firmware_path
         for widget in [self.install_button, self.verify_button, self.refresh_button,
-                       self.combo, *self.firmware_buttons]:
+                       self.combo, self.browse_button]:
             widget.configure(state='disabled')
         self.progress['value'] = 0
         self.status.set('Подготовка…')
-        threading.Thread(target=self.worker, args=(selected, firmware, verify_only), daemon=False).start()
+        threading.Thread(target=self.worker, args=(selected, firmware, path, verify_only), daemon=False).start()
 
-    def worker(self, selected, firmware, verify_only=False):
+    def worker(self, selected, firmware, path, verify_only=False):
         # Hold the machine awake during transmission and read-back, on this same thread.
         try:
             if sys.platform == 'win32':
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
             action = backend.verify_only if verify_only else backend.update
             action(selected, lambda text, percent: self.events.put(('progress', text, percent)),
-                   firmware=firmware)
+                   firmware=firmware, path=path)
             self.events.put(('done', '', 100))
         except Exception as e:
             log = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater' / 'last-error.txt'
@@ -220,6 +232,7 @@ class App:
                 else:
                     self.busy = False
                     self.refresh_button.configure(state='normal')
+                    self.browse_button.configure(state='normal')
                     self.combo.configure(state='readonly')
                     for button in self.firmware_buttons:
                         button.configure(state='normal')
