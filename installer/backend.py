@@ -1,6 +1,7 @@
 """Selected-device updater using the validated XREAL website HID protocol."""
 import hashlib
 import io
+import json
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -44,8 +45,28 @@ EXPERIMENTAL = Firmware(
      'pilot/conf/pilot_default_config.json', 'pilot/conf/pilot_default_config_gina.json',
      'pilot/conf/pilot_default_config_hebe.json', 'pilot/resource/lut_3d_ai_hdr.cube',
      'pilot/checksums.sha256'))
-FIRMWARES = {firmware.key: firmware for firmware in (STANDARD, EXPERIMENTAL)}
+ONE_TARGET = {'schema': 1, 'model': 'one', 'usb_pid': 0x0438, 'soc': SOC, 'experimental': True}
+ONE_EXPERIMENTAL = Firmware(
+    'one-experimental', 'XREAL-One-Pilot2-RU-Real3D-AIHDR-TEST.bin', '',
+    PILOT_2, 0x66, frozenset(),
+    EXPERIMENTAL.files + ('pilot/conf/pilot_default_config_gf.json', 'pilot/xreal-target.json'))
+FIRMWARES = {firmware.key: firmware for firmware in (STANDARD, EXPERIMENTAL, ONE_EXPERIMENTAL)}
 ACCEPTED_PILOT = frozenset({'1.9.1.20260914175625', PILOT_2})
+
+
+def container_crc(data):
+    """CRC used by XREAL's type-4 Pilot container, excluding its first 8 bytes."""
+    polynomial = 0xf4acfb13
+    table = []
+    for index in range(256):
+        value = index << 24
+        for _ in range(8):
+            value = ((value << 1) ^ (polynomial if value & 0x80000000 else 0)) & 0xffffffff
+        table.append(value)
+    value = 0
+    for byte in memoryview(data)[8:]:
+        value = ((value << 8) ^ table[((value >> 24) ^ byte) & 0xff]) & 0xffffffff
+    return value
 
 
 def devices():
@@ -90,14 +111,14 @@ def identity(probe, firmware=STANDARD):
     pid = getattr(probe, 'selected', {}).get('product_id', 0x0436)
     one = pid == 0x0438
     supported_current = (actual[1] in ACCEPTED_PILOT and
-                         (actual[1] != PILOT_2 or actual[2] == 'X1112010'))
-    supported_model = ((one and firmware is STANDARD and actual[1] == PILOT) or
-                       (pid == 0x0436 and actual[2] in firmware.skus))
+                         (actual[1] != PILOT_2 or one or actual[2] == 'X1112010'))
+    supported_model = ((one and firmware in (STANDARD, ONE_EXPERIMENTAL)) or
+                       (pid == 0x0436 and firmware is not ONE_EXPERIMENTAL and actual[2] in firmware.skus))
     if actual[0] != SOC or not supported_current or not supported_model:
         raise RuntimeError('Эта сборка не подходит к версии или модели очков. '
                            f'Обнаружены: USB PID {pid:04x}, SoC {actual[0]}, '
                            f'Pilot {actual[1]}, SKU {actual[2]}. '
-                           'Для One нужен Pilot 1.9.1 и русский BIN; для One Pro '
+                           'Для One нужен стандартный BIN или тестовый BIN именно для One; для One Pro '
                            'требуется поддерживаемый SKU и версия Pilot. Запись не начата.')
     return actual
 
@@ -105,6 +126,8 @@ def identity(probe, firmware=STANDARD):
 def firmware_path(firmware=STANDARD):
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).resolve().parent / firmware.filename
+    if firmware is ONE_EXPERIMENTAL:
+        return Path(__file__).resolve().parents[1] / 'outputs/xreal-one-real3d-hdr-test' / firmware.filename
     folder = 'xreal-russian-firmware' if firmware is STANDARD else 'xreal-pilot2-real3d-cpu'
     filename = 'XREAL_One_Pro_Pilot_RU.bin' if firmware is STANDARD else firmware.filename
     return Path(__file__).resolve().parents[1] / 'outputs' / folder / filename
@@ -112,25 +135,56 @@ def firmware_path(firmware=STANDARD):
 
 def load_package(path=None, firmware=STANDARD):
     data = Path(path or firmware_path(firmware)).read_bytes()
-    if hashlib.sha256(data).hexdigest() != firmware.sha256:
-        raise RuntimeError('Неподдерживаемый или повреждённый BIN. Выберите файл из ZIP выпуска.')
-    if (int.from_bytes(data[4:8], 'little') != len(data)-8 or
+    if (len(data) < 64 or
+            int.from_bytes(data[4:8], 'little') != len(data)-8 or
             int.from_bytes(data[8:12], 'little') != 0x1500 or
             int.from_bytes(data[12:16], 'little') != 4 or
             data[16:36] != firmware.pilot.encode()):
         raise RuntimeError('Неверный заголовок прошивки.')
-    with zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(x ^ firmware.xor_key for x in range(256))))) as z:
-        if z.testzip() is not None:
-            raise RuntimeError('Архив прошивки повреждён.')
-        expected = {name: hashlib.sha256(z.read(name)).hexdigest() for name in firmware.files}
+    if container_crc(data) != int.from_bytes(data[:4], 'little'):
+        raise RuntimeError('Неверная контрольная сумма контейнера BIN.')
+    try:
+        with zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(x ^ firmware.xor_key for x in range(256))))) as z:
+            names = z.namelist()
+            if len(names) != len(set(names)) or z.testzip() is not None:
+                raise RuntimeError('Архив прошивки повреждён.')
+            lines = z.read('pilot/checksums.sha256').decode('ascii').splitlines()
+            checked_names = set()
+            for line in lines:
+                digest, relative = line.split(None, 1)
+                name = 'pilot/' + relative.removeprefix('./')
+                if (len(digest) != 64 or name in checked_names or
+                        hashlib.sha256(z.read(name)).hexdigest() != digest):
+                    raise RuntimeError('Внутренняя контрольная сумма BIN не совпадает: '+name)
+                checked_names.add(name)
+            actual_files = {name for name in names if not name.endswith('/')}
+            if checked_names != actual_files - {'pilot/checksums.sha256'}:
+                raise RuntimeError('Не все файлы BIN перечислены в checksums.sha256.')
+            target = json.loads(z.read('pilot/xreal-target.json')) if 'pilot/xreal-target.json' in names else None
+            if ((firmware is ONE_EXPERIMENTAL and target != ONE_TARGET) or
+                    (firmware is not ONE_EXPERIMENTAL and target is not None)):
+                raise RuntimeError('BIN предназначен для другой модели очков.')
+            expected = {name: hashlib.sha256(z.read(name)).hexdigest() for name in firmware.files}
+    except (zipfile.BadZipFile, KeyError, UnicodeError, ValueError) as error:
+        raise RuntimeError('Архив BIN повреждён или содержит неподдерживаемые файлы.') from error
     return data, expected
 
 
 def identify_package(path):
-    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-    firmware = next((item for item in FIRMWARES.values() if item.sha256 == digest), None)
+    with Path(path).open('rb') as stream:
+        header = stream.read(64)
+    firmware = next((item for item in FIRMWARES.values()
+                     if header[16:36] == item.pilot.encode()), None)
     if firmware is None:
-        raise RuntimeError('Неподдерживаемый BIN. Выберите один из двух файлов ZIP выпуска.')
+        raise RuntimeError('Неподдерживаемая версия Pilot в BIN.')
+    if firmware is EXPERIMENTAL:
+        try:
+            data = Path(path).read_bytes()
+            with zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(x ^ 0x66 for x in range(256))))) as archive:
+                if 'pilot/xreal-target.json' in archive.namelist():
+                    firmware = ONE_EXPERIMENTAL
+        except zipfile.BadZipFile as error:
+            raise RuntimeError('Архив BIN повреждён.') from error
     load_package(path, firmware)
     return firmware
 

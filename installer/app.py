@@ -19,7 +19,7 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One / One Pro · Русское меню · v0.5.0')
+        root.title('XREAL One / One Pro · Русское меню · v0.6.0-test')
         scale = float(root.tk.call('tk', 'scaling')) / (96 / 72)
         left, top, right, bottom = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
         if sys.platform == 'win32':
@@ -62,7 +62,7 @@ class App:
         self.combo.bind('<<ComboboxSelected>>', self.selected)
         self.refresh_button = ttk.Button(row, text='Обновить список', command=self.refresh)
         self.refresh_button.pack(anchor='w', pady=(6, 0))
-        ttk.Label(frame, text='2. Выберите BIN-файл прошивки из ZIP').pack(anchor='w', pady=(2, 8))
+        ttk.Label(frame, text='2. Выберите BIN-файл прошивки').pack(anchor='w', pady=(2, 8))
         self.firmware = None
         self.firmware_path = None
         self.file_name = tk.StringVar(value='Файл не выбран')
@@ -71,8 +71,8 @@ class App:
         self.browse_button.pack(anchor='w', pady=(6, 8))
         self.description = ttk.Label(frame, wraplength=640, justify='left')
         self.description.pack(anchor='w', pady=(5, 10))
-        ttk.Label(frame, text='EXE и BIN лежат отдельно в ZIP. Приложение принимает только проверенные '
-                  'русские BIN-файлы этого выпуска. Русский заменяет польский язык, английский сохраняется.',
+        ttk.Label(frame, text='EXE и BIN скачиваются отдельно. Приложение проверяет формат, контрольные суммы '
+                  'и совместимость BIN перед записью. Русский заменяет польский язык, английский сохраняется.',
                   wraplength=640).pack(anchor='w')
         ttk.Label(frame, text='Закройте страницу обновления XREAL. Не отключайте USB-кабель во время записи.',
                   foreground='#6b4c16', wraplength=640).pack(anchor='w', pady=(10, 14))
@@ -143,6 +143,12 @@ class App:
             self.description.configure(text='Русская Pilot 1.9.1 для XREAL One и One Pro. '
                                        'Официальный пакет Pilot 1.9.1 для обеих моделей имеет один MD5. '
                                        'Переведено 437 строк, шрифт согласован. На One перевод пока не проверен.')
+        elif self.firmware is backend.ONE_EXPERIMENTAL:
+            self.description.configure(text='Тестовая Pilot 2.0 только для обычных XREAL One. '
+                                       'Русское меню, AI HDR и Real3D 2D→3D с CPU-обработкой. '
+                                       'Настройки панели One, без профиля яркости Hebe и разгона. '
+                                       'На обычном One работа этих функций ещё не проверена; '
+                                       'плавность и глубина требуют проверки владельцем.')
         elif self.firmware is backend.EXPERIMENTAL:
             self.description.configure(text='Только для One Pro X1112010. Русское меню, AI HDR, '
                                        'режимы «Чтение» и «Кино», профиль Hebe с luminance до 500 '
@@ -150,7 +156,7 @@ class App:
                                        'глубина заметна слабо; измерено около 53–55 обработанных кадров/с. '
                                        'Стабильные 60 кадров/с не подтверждены.')
         else:
-            self.description.configure(text='Выберите один из русских BIN-файлов ZIP выпуска.')
+            self.description.configure(text='Выберите BIN-файл подходящей версии Pilot.')
         self.selected()
 
     def choose_firmware(self):
@@ -160,15 +166,20 @@ class App:
                                           filetypes=[('Прошивка XREAL', '*.bin')])
         if not path:
             return
+        self.firmware = None
+        self.firmware_path = None
+        self.selected()
+        self.browse_button.configure(state='disabled')
+        self.file_name.set(Path(path).name)
+        self.status.set('Проверка BIN и контрольных сумм…')
+        threading.Thread(target=self.check_firmware, args=(path,), daemon=True).start()
+
+    def check_firmware(self, path):
         try:
             firmware = backend.identify_package(path)
-        except Exception as e:
-            messagebox.showerror('BIN не подходит', str(e), parent=self.root)
-            return
-        self.firmware = firmware
-        self.firmware_path = Path(path)
-        self.file_name.set(self.firmware_path.name)
-        self.firmware_changed()
+            self.events.put(('file_ok', path, firmware))
+        except Exception as error:
+            self.events.put(('file_error', str(error), 0))
 
     def refresh(self):
         if self.busy:
@@ -226,7 +237,18 @@ class App:
         try:
             while True:
                 kind, text, percent = self.events.get_nowait()
-                if kind == 'progress':
+                if kind == 'file_ok':
+                    self.firmware = percent
+                    self.firmware_path = Path(text)
+                    self.browse_button.configure(state='normal')
+                    self.status.set('BIN проверен. Выберите очки и запустите установку.')
+                    self.firmware_changed()
+                elif kind == 'file_error':
+                    self.file_name.set('Файл не выбран')
+                    self.browse_button.configure(state='normal')
+                    self.status.set('BIN не подходит: '+text)
+                    messagebox.showerror('BIN не подходит', text, parent=self.root)
+                elif kind == 'progress':
                     self.status.set(text)
                     self.progress['value'] = percent
                 else:
@@ -234,8 +256,6 @@ class App:
                     self.refresh_button.configure(state='normal')
                     self.browse_button.configure(state='normal')
                     self.combo.configure(state='readonly')
-                    for button in self.firmware_buttons:
-                        button.configure(state='normal')
                     # Require a fresh selection before another write, especially after errors.
                     self.combo.set('')
                     if kind == 'error':
@@ -257,9 +277,12 @@ def main():
         # Diagnostics never issue firmware-writing commands.
         mode = next(flag for flag in ('--verify-device', '--check-device', '--self-test') if flag in sys.argv)
         dest = Path(sys.argv[sys.argv.index(mode)+1])
+        chosen_path = Path(sys.argv[sys.argv.index('--bin')+1]) if '--bin' in sys.argv else None
         reports = {}
-        for key, firmware in backend.FIRMWARES.items():
-            data, expected = backend.load_package(firmware=firmware)
+        selected_firmware = backend.identify_package(chosen_path) if chosen_path else None
+        candidates = ((selected_firmware.key, selected_firmware),) if chosen_path else backend.FIRMWARES.items()
+        for key, firmware in candidates:
+            data, expected = backend.load_package(chosen_path, firmware=firmware)
             reports[key] = {'bytes': len(data), 'verified_files': len(expected)}
         root = tk.Tk()
         root.withdraw()
@@ -273,12 +296,13 @@ def main():
             if count != 1:
                 raise RuntimeError('Read-only check requires exactly one device')
             with backend.SelectedProbe(found[0]) as probe:
-                selected_firmware = backend.FIRMWARES.get(
-                    sys.argv[sys.argv.index('--firmware')+1], backend.STANDARD
-                ) if '--firmware' in sys.argv else backend.STANDARD
+                if selected_firmware is None:
+                    selected_firmware = (backend.FIRMWARES.get(
+                        sys.argv[sys.argv.index('--firmware')+1], backend.STANDARD
+                    ) if '--firmware' in sys.argv else backend.STANDARD)
                 device_identity = backend.identity(probe, selected_firmware)
             if mode == '--verify-device':
-                _, expected = backend.load_package(firmware=selected_firmware)
+                _, expected = backend.load_package(chosen_path, firmware=selected_firmware)
                 backend.verify_selected(found[0], expected, lambda *_: None,
                                         firmware=selected_firmware)
         dest.write_text(json.dumps({'ok': True, 'firmwares': reports,

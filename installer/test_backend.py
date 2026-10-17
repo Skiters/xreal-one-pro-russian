@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 from pathlib import Path
 import struct
 import tempfile
@@ -50,6 +51,60 @@ class FakeProbe:
 
 
 class BackendTests(unittest.TestCase):
+    def test_one_experiment_updates_and_verifies_pilot2(self):
+        for current in (b.PILOT, b.PILOT_2):
+            with self.subTest(current=current):
+                probe = FakeProbe(sku='ONE-DEVICE', pilot=current, target_pilot=b.PILOT_2)
+                self.run_update(probe, b.ONE_EXPERIMENTAL, product_id=0x0438)
+                self.assertEqual(probe.pilot, b.PILOT_2)
+                self.assertEqual(sum(c == 4628 for c, _ in probe.calls), 1)
+
+    def test_one_experiment_rejects_pro_and_wrong_system_before_writing(self):
+        for pid, args in ((0x0436, {}), (0x0438, {'soc': 'wrong'}),
+                          (0x0438, {'pilot': 'unknown'})):
+            with self.subTest(pid=pid, args=args):
+                probe = FakeProbe(**args)
+                with self.assertRaises(RuntimeError):
+                    self.run_update(probe, b.ONE_EXPERIMENTAL, product_id=pid)
+                self.assertFalse(any(c in (4628, 4629, 4630) for c, _ in probe.calls))
+
+    def test_one_can_explicitly_install_standard_after_experiment(self):
+        probe = FakeProbe(sku='ONE-DEVICE', pilot=b.PILOT_2, target_pilot=b.PILOT)
+        self.run_update(probe, b.STANDARD, product_id=0x0438)
+        self.assertEqual(probe.pilot, b.PILOT)
+
+    def test_one_bin_is_identified_by_internal_target_and_not_filename(self):
+        original = b.firmware_path(b.ONE_EXPERIMENTAL)
+        self.assertIs(b.identify_package(original), b.ONE_EXPERIMENTAL)
+        with self.assertRaisesRegex(RuntimeError, 'другой модели'):
+            b.load_package(original, b.EXPERIMENTAL)
+        with self.assertRaisesRegex(RuntimeError, 'другой модели'):
+            b.load_package(b.firmware_path(b.EXPERIMENTAL), b.ONE_EXPERIMENTAL)
+
+    def test_unknown_target_even_with_valid_checksums_is_rejected(self):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w') as z:
+            lines = []
+            for name in b.ONE_EXPERIMENTAL.files:
+                if name == 'pilot/checksums.sha256':
+                    continue
+                content = json.dumps(dict(b.ONE_TARGET, model='other')).encode() if name.endswith('xreal-target.json') else b'data'
+                z.writestr(name, content)
+                lines.append(hashlib.sha256(content).hexdigest()+'  ./'+name[6:])
+            z.writestr('pilot/checksums.sha256', '\n'.join(lines)+'\n')
+        header = bytearray(64)
+        header[8:12] = (0x1500).to_bytes(4, 'little')
+        header[12:16] = (4).to_bytes(4, 'little')
+        header[16:36] = b.PILOT_2.encode()
+        data = header + stream.getvalue().translate(bytes(i ^ 0x66 for i in range(256)))
+        data[4:8] = (len(data)-8).to_bytes(4, 'little')
+        data[:4] = b.container_crc(data).to_bytes(4, 'little')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'wrong-target.bin'
+            path.write_bytes(data)
+            with self.assertRaisesRegex(RuntimeError, 'другой модели'):
+                b.identify_package(path)
+
     def test_second_one_pro_sku_uses_same_update_flow(self):
         probe = FakeProbe(sku='X1112011')
         _, events = self.run_update(probe)
@@ -184,13 +239,41 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 b.load_package(path)
 
-    def test_file_selection_requires_known_hash(self):
+    def test_file_selection_requires_valid_pilot_container(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d)/'unknown.bin'
             path.write_bytes(b'unknown')
-            with self.assertRaisesRegex(RuntimeError, 'Неподдерживаемый BIN'):
+            with self.assertRaisesRegex(RuntimeError, 'Неподдерживаемая версия'):
                 b.identify_package(path)
         self.assertIs(b.identify_package(b.firmware_path(b.STANDARD)), b.STANDARD)
+
+    def test_custom_pilot2_bin_validates_without_hash_allowlist(self):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w') as archive_file:
+            lines = []
+            for name in b.EXPERIMENTAL.files:
+                if name == 'pilot/checksums.sha256':
+                    continue
+                content = name.encode()
+                archive_file.writestr(name, content)
+                lines.append(f'{hashlib.sha256(content).hexdigest()}  ./'+name.removeprefix('pilot/'))
+            archive_file.writestr('pilot/checksums.sha256', '\n'.join(lines)+'\n')
+        header = bytearray(64)
+        header[8:12] = (0x1500).to_bytes(4, 'little')
+        header[12:16] = (4).to_bytes(4, 'little')
+        header[16:36] = b.PILOT_2.encode()
+        data = header + stream.getvalue().translate(bytes(x ^ 0x66 for x in range(256)))
+        data[4:8] = (len(data)-8).to_bytes(4, 'little')
+        data[:4] = b.container_crc(data).to_bytes(4, 'little')
+        self.assertNotEqual(hashlib.sha256(data).hexdigest(), b.EXPERIMENTAL.sha256)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'custom.bin'
+            path.write_bytes(data)
+            self.assertIs(b.identify_package(path), b.EXPERIMENTAL)
+            data[-1] ^= 1
+            path.write_bytes(data)
+            with self.assertRaisesRegex(RuntimeError, 'контрольная сумма контейнера'):
+                b.identify_package(path)
 
     def test_selected_path_never_falls_back(self):
         with patch.object(b, 'devices', return_value=[{'path': b'other'}]), patch.object(b.hid, 'device') as device:
@@ -269,6 +352,10 @@ class BackendTests(unittest.TestCase):
                 app.firmware_changed()
                 self.assertIn('AI HDR', app.description['text'])
                 self.assertEqual(str(app.install_button['state']), 'normal')
+                app.firmware = b.ONE_EXPERIMENTAL
+                app.firmware_changed()
+                self.assertIn('обычных XREAL One', app.description['text'])
+                self.assertIn('ещё не проверена', app.description['text'])
                 update.assert_not_called()
                 app.busy = True
                 with patch('app.messagebox.showinfo') as notice, patch.object(root, 'destroy') as destroy:
@@ -276,6 +363,9 @@ class BackendTests(unittest.TestCase):
                     notice.assert_called_once()
                     destroy.assert_not_called()
         finally:
+            root.update_idletasks()
+            for timer in root.tk.call('after', 'info'):
+                root.after_cancel(timer)
             root.destroy()
 
 

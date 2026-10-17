@@ -4,6 +4,13 @@
 
 ## Скачать
 
+**Для тестирования Real3D и AI HDR на обычных XREAL One:**
+[отдельный тестовый релиз v0.6.0](https://github.com/Skiters/xreal-one-pro-russian/releases/tag/v0.6.0-one-test).
+Нужны новый `XREAL-Russian-Updater-v0.6.0-test.exe` и
+`XREAL-One-Pilot2-RU-Real3D-AIHDR-TEST.bin`. **На обычном One физически ещё не проверено.**
+Внутри русский Pilot 2.0, CPU-порт Real3D и AI HDR, настройки панели One без Hebe и разгона.
+[Описание и порядок проверки](installer/ONE-TEST.md). Обычные варианты ниже доступны отдельно.
+
 **[XREAL-Russian-Updater.exe — приложение для Windows 10/11 x64](https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.5.0-windows/XREAL-Russian-Updater.exe)**
 
 | Очки | Файл прошивки |

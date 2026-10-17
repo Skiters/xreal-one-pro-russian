@@ -9,6 +9,7 @@
 !/outputs/
 /work/*
 !/work/build_russian_pilot.py
+!/work/build_one_features.py
 !/work/build_uniform_fonts.py
 !/work/test_uniform_fonts.py
 !/work/pack_uniform_pilot.cjs
