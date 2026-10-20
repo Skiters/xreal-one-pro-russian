@@ -28,26 +28,8 @@ intercepts only the three Real3D DSP RPCs and computes their result on the CPU.
 This does **not** establish that the two devices have the same usable DSP
 configuration.
 
-Device logs while the DP input was 1920x1080 at approximately 60 Hz showed:
+## Реализация в выпуске 0.7.0
 
-| Local CPU implementation | Post-processed frames/s | Average synthesis latency |
-| --- | ---: | ---: |
-| First per-pixel fallback | ~13 | ~275-390 ms |
-| Fast depth-cell fallback | ~32 | ~126-138 ms |
-| Two luma workers, chroma on caller | ~48 | ~72 ms |
-| Four equal YUV420 depth-row segments | ~53-55 | ~65 ms |
+One Pro предлагает два обработчика: legacy mesh One Pro и CPU-порт Pro+, с общей оценкой глубины Pilot 2.0 и отдельной регулировкой силы эффекта. Обычный One получает только CPU-порт Pro+ со своим профилем GF. Системная DSP-прошивка не заменяется.
 
-Correction, 2026-10-20: the user clarified that actual stereo depth was not
-visible in these earlier builds either. The earlier subjective reports below
-do not establish stereo output. See `firmware/REAL3D-INVESTIGATION.md` for the
-recovered fractional-displacement contract and remaining eye-routing checks.
-
-The active monocular-depth graph uses the **heavy** NPU model
-`gina_ar9481npu_depth_heavy` (`depth_model_type:2`). The depth map is 480x270;
-observed values after warm-up ranged about 1-157. The four-segment CPU warp
-spends about 1.5-2.5 ms mapping buffers, 9-12 ms warping, and 0.5 ms flushing
-cache on measured frames. It creates bounded horizontal disparity but is not a
-reconstruction of either vendor warp. The user confirmed a slight depth effect
-and a small smoothness improvement. Selecting a 60 Hz EDID does not mean the
-post-processor delivers 60 distinct frames/s; 60 remains unverified for the
-current device and build.
+[Актуальное сравнение](../../firmware/REAL3D-COMPARISON.md) и [проверки выпуска](../../firmware/VALIDATION.md). Показатели скорости промежуточных реализаций не относятся к текущим BIN; подтверждённых измерений постоянных 60 обработанных кадров/с в этом выпуске нет.

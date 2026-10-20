@@ -25,6 +25,7 @@ foreach ($bin in $bins) {
 & $python -m PyInstaller --noconfirm --onefile --windowed --noupx --name "XREAL-Russian-Updater-$version" --paths work --paths installer --distpath $destination --workpath work/installer-build --specpath work installer/app.py
 if ($LASTEXITCODE) { throw 'Build failed' }
 foreach ($bin in $bins) { Copy-Item -LiteralPath $bin -Destination $destination -Force }
+Copy-Item -LiteralPath 'outputs/xreal-russian-firmware/XREAL_One_Pro_Pilot_RU.bin' -Destination (Join-Path $destination 'XREAL-One-OnePro-RU-Pilot1.9.1.bin') -Force
 Copy-Item -LiteralPath (Join-Path $FirmwareDirectory 'build-report.json') -Destination $destination -Force
 Copy-Item -LiteralPath 'installer/PACKAGE-README.md' -Destination (Join-Path $destination 'README.md') -Force
 & $python installer/write_checksums.py $destination

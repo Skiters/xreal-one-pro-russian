@@ -1,6 +1,6 @@
 """Build an unverified One-only Pilot 2 experiment from the published CPU port.
 
-Requires the locally retained vendor Pilot 2 ZIP and v0.5.0 Real3D BIN.
+Requires the locally retained vendor Pilot 2 ZIP and hash-pinned Real3D base BIN.
 Does not access a device, change system partitions, or enable overclocking.
 """
 import copy

@@ -25,7 +25,6 @@ and deterministic repackaging of those inputs.
   stereo setting. They do not advertise 133/240 Hz, change EDID, or enable
   overclocking. These are separate unresolved experiments.
 
-Full LUT fidelity may cost more CPU time than the old diagonal approximation.
 Host tests cannot establish performance on the glasses. Stable Real3D 60 fps
 is an acceptance target, not a result of this release.
 
@@ -33,7 +32,7 @@ is an acceptance target, not a result of this release.
 
 | Input | SHA256 |
 |---|---|
-| Published v0.5.0 `XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin` | `1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0` |
+| Hash-pinned build input `XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin` | `1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0` |
 | Original vendor `pilot-pro-plus.zip` | `c052575b989c9811c07563bf61ff3360c32a275bc3bb4dd426e211e94525759b` |
 
 The base BIN is retained under `outputs/xreal-pilot2-real3d-cpu/`. Obtain the
@@ -52,11 +51,10 @@ without firmware-write commands. Keep device captures outside Git.
 
 ```powershell
 python firmware/build.py --clang C:/toolchain/bin/clang.exe `
-  --sysroot C:/xreal-inputs/sysroot --stock C:/xreal-inputs/pilot-pro-plus.zip
-powershell -ExecutionPolicy Bypass -File installer/build.ps1
+  --sysroot C:/xreal-inputs/sysroot --stock C:/xreal-inputs/pilot-pro-plus.zip --model one
 ```
 
-Use `--model one` to build only One. `--compare-onepro-warp` builds the dual-row One Pro comparison. The output includes model-specific BINs, the adapter ELF and a build
+The command above builds only One. For One Pro, use a separate output directory with `--compare-onepro-warp`; also provide the pinned mesh library through `--onepro-mesh` and libdl in the sysroot. Prepare the 1S package as below, then stage all three model BINs and a combined build-report.json before running `installer/build.ps1` (see [installer build](../installer/README.md)). `--compare-onepro-warp` builds the dual-row One Pro comparison. The output includes model-specific BINs, the adapter ELF and a build
 report. Every BIN contains source hashes, compiler identity, input hashes,
 profile, ABI constraints and build ID. ZIP entries have fixed timestamps
 and ordering. Use the same Python/zlib and compiler to reproduce bytes.
@@ -93,7 +91,7 @@ These host tests do not validate the target's HAL or optics.
 
 ## Physical acceptance, separately for each model
 
-1. Installer preflight: PID, SKU, SoC, Pilot, five system library hashes and
+1. Installer preflight: PID, SKU, SoC, Pilot, required system library hashes and
    MMZ range match. Read back every packaged file after writing.
 2. SDR, AI HDR, Reading and Movie each show correct colors and can return to
    Standard. Repeat mode transitions and initialization/close ten times.
@@ -103,8 +101,8 @@ These host tests do not validate the target's HAL or optics.
    callback throughput and stage times; separately inspect NPU/queue delays,
    display frame pacing, temperature and end-to-end latency. A 60 Hz EDID
    entry does not establish 60 processed frames/s.
-5. Promote from candidate only after these results are recorded for the
-   relevant model. One Pro results never count as a physical One test.
+5. Record these results for the relevant model. Current One Pro user confirmation
+   does not establish physical One compatibility or measured throughput.
 
 No automatic firmware rollback is implemented. A failure produces a report;
 subsequent fixes require another candidate, not an implicit downgrade.

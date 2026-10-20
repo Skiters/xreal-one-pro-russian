@@ -21,5 +21,11 @@
     "sha256": "ec91075526375d651b10c24f303bd66bd7196677430ebccaa6b220773851b302",
     "bytes": 11782271,
     "validation": "46 suite tests plus libdl guard test; packaged EXE self-test with all three BINs passed, firmware_writes=0"
+  },
+  "XREAL-One-OnePro-RU-Pilot1.9.1.bin": {
+    "sha256": "258ecdb3a9892c7a2bf700c4f0fbccf52ced8915081c0109beb08c59c60418ec",
+    "bytes": 88321128,
+    "readback_files": 64,
+    "validation": "Approved translation-only payload, unchanged; model/version checks retained"
   }
 }

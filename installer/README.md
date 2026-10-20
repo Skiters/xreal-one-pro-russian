@@ -10,7 +10,7 @@ Pinned dependencies: `requirements.txt`. Python 3.13 x64 and PyInstaller 6.22.3 
 powershell -ExecutionPolicy Bypass -File installer/build.ps1 -FirmwareDirectory outputs/v0.7.0
 ```
 
-The directory must contain `XREAL-one-pro-Pilot2-RU-0.7.0.bin`, `XREAL-one-Pilot2-RU-0.7.0.bin`, `XREAL-1S-RU-Pilot1.9.1.bin`, and `build-report.json`. Output: `outputs/release-0.7.0`. The EXE contains no firmware, credentials or network reporting. Release BINs are distributed as assets; vendor inputs and device backups remain local.
+The directory must contain `XREAL-one-pro-Pilot2-RU-0.7.0.bin`, `XREAL-one-Pilot2-RU-0.7.0.bin`, `XREAL-1S-RU-Pilot1.9.1.bin`, and `build-report.json`. The approved translation-only One / One Pro BIN is also copied from `outputs/xreal-russian-firmware/` as `XREAL-One-OnePro-RU-Pilot1.9.1.bin`. Output: `outputs/release-0.7.0`. The EXE contains no firmware, credentials or network reporting. Release BINs are distributed as assets; vendor inputs and device backups remain local.
 
 ```powershell
 python -m unittest discover -s installer -p 'test_*.py' -v

@@ -17,7 +17,11 @@
 
 [Все файлы выпуска](https://github.com/Skiters/xreal-one-pro-russian/releases/tag/v0.7.0) · [Контрольные суммы SHA256](https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.7.0/SHA256SUMS.txt).
 
-One Pro X1112011 **не поддерживается новым BIN Pilot 2.0**. Для этого SKU и для желающих оставить обычную Pilot 1.9.1 доступен прежний [BIN только с переводом](https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.5.0-windows/XREAL-One-RU-Pilot1.9.1.bin), совместимый с новым EXE. Он предназначен для One / One Pro, не для 1S.
+### Только перевод для One / One Pro
+
+[**XREAL-One-OnePro-RU-Pilot1.9.1.bin**](https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.7.0/XREAL-One-OnePro-RU-Pilot1.9.1.bin) — дополнительный вариант без переноса функций Pro+. Он подходит обычному One и One Pro `X1112010` / `X1112011` с поддерживаемыми версиями системы. Устанавливается тем же EXE 0.7.0. Для 1S используйте её отдельный BIN из таблицы.
+
+One Pro `X1112011` поддерживается только этим вариантом с переводом; BIN Pilot 2.0 для него не предназначен.
 
 ## Как установить
 
