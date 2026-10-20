@@ -35,7 +35,8 @@ def main():
     build.argtypes=[C.POINTER(C.c_ushort),C.POINTER(C.c_uint64),C.c_uint,C.c_uint]
     run=lib.xreal_full_rgb_lut
     run.argtypes=[C.POINTER(C.c_uint64),*[C.POINTER(C.c_ubyte)]*3,*[C.c_uint]*5]
-    table=(C.c_uint64*(17*256*256))()
+    lib.xreal_rgb_table_bytes.restype=C.c_uint64
+    table=(C.c_uint64*(lib.xreal_rgb_table_bytes()//8))()
     rng=random.Random(20261020)
     cubes={
         'identity':[round(v*65280/16) for b in range(17) for g in range(17)

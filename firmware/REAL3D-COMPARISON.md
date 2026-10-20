@@ -1,11 +1,11 @@
-# Local Real3D comparison: rc5
+# Local Real3D comparison: rc7
 
 This test adds two selectable **mesh/warp implementations** on One Pro
 X1112010 / SoC 15.1.03.603_20260914. It does not transplant the complete
 Pilot 1.9.1 depth-inference stack. Both choices retain Pilot 2.0's depth
 estimator, model, frame scheduler and display routing.
 
-In the glasses, the **3D mode list** now has two separate entries:
+The candidate is intended to display two separate rows in the **3D mode list**:
 
 - **Real3D One Pro** executes the unchanged ARM64 mesh kernel from the
   original One Pro Pilot 1.9.1 `libnr_depth_manager.so`.
@@ -22,13 +22,37 @@ Real3D algorithm never sets depth to Natural or any other value. Both use the
 current depth setting; they do not have separate per-algorithm depth presets.
 Algorithm selection is saved atomically in `/usrdata/real3d-algorithm`.
 The default without a saved selection is the current Pro+ CPU port.
-Since the two mesh algorithms use different geometry, equal depth input
-does not imply equal perceived strength.
+Since the two mesh algorithms use different geometry and view ordering, equal
+depth input does not imply identical perceived depth. rc6 halves the legacy
+kernel's per-eye displacement: it shifts both views by opposite amounts,
+whereas the CPU port shifts only one view. This avoids the legacy branch's
+previous doubled separation; it does not prove that all ghosting is resolved.
 
 rc4 incorrectly reused the strength slider as an algorithm selector. The
 user tested it and requested independent mode entries and depth adjustment;
-rc5 removes that substitution. This is a UI correction, not a new stereo
-quality or performance claim.
+rc5 removed that substitution, but the user reported that the two entries
+still appeared in one row, together with displaced ghost images and Movie lag.
+Its host test had mocked out the native registration's repositioning step.
+rc6 applies layout after that step and after selection refresh. The updated
+regression test fails on the shipped rc5 adapter with both Real3D rows at y=94,
+and passes on rc6 with five non-overlapping rows inside the 410-pixel viewport.
+Final appearance and navigation still require a physical menu check.
+rc7 also removes the exact-five-item guard: native navigation can omit hidden
+SBS modes depending on the input. The previous guard then skipped layout
+entirely, leaving the cloned and original rows at the same position. A second
+regression models that three-item list, fails on rc6 and passes on rc7.
+
+For Movie/AI HDR, rc6 retains the full cross-channel LUT. It halves its storage
+from 8,912,896 to 4,457,472 bytes using Q2 entries and processes four pixels
+at once with vector arithmetic. A 256-entry mapping replaces per-pixel blue
+coordinate division. Independent tests of both shipped preset cubes and
+random cubes stayed within one RGB8 level of a floating-point trilinear oracle;
+identity remains exact. Host timings improved on random frames; gradient and
+flat-frame results varied with compiler optimization (some became slower).
+This is a candidate optimization, not an on-device FPS claim.
+The previously exported device log showed approximately 20–38 ms in the color
+conversion stage, with much smaller cache-flush time; sessions do not identify
+which preset was selected, so these samples cannot be attributed solely to Movie.
 
 ## Vendor evidence
 
@@ -52,7 +76,7 @@ kernel on four row segments. It never registers the old `DepthManager`
 plugin or replaces the Pilot 2 `ImagePostProcessor` interface.
 
 Pilot 2 supplies unsigned Q2/Q3/Q4 displacement. The old kernel consumes
-integer pixel displacement: the bridge truncates the fractional part.
+integer per-eye displacement: rc6 divides by two and truncates the fractional part.
 It does not multiply disparity or rescale it by each frame's extrema.
 Both source and destination planes must be flushed after all workers finish.
 The kernel's per-thread scratch vector remains managed by its own TLS code.
@@ -78,8 +102,8 @@ are patched.
   opposite-eye/chroma oracles, TLS initialization, write bounds, discontinuous
   maps and segmentation equivalence.
 - `test_onepro_bridge.py`: executes the compiled bridge and original kernel
-  together on a 1920×1080 frame, checking Q3 conversion, all four jobs, both
-  views and row padding.
+  together on a 1920×1080 frame, checking Q3 conversion to half displacement,
+  all four jobs, both views and row padding.
 - `test_compare_modes.py`: deterministic binary patch, original mappings and
   relocation preservation, dynamic metadata consistency, ARM64 hooks at two
   ASLR bases, unchanged native depth instructions/range/translations.
@@ -87,12 +111,18 @@ are patched.
   verifies the same native LVGL calls/styles, five entries, two callbacks,
   persistent navigation registration and selection highlight. External OSD/LVGL
   services are modeled; this does not replace an on-device menu test.
+- `test_lut_arm64.py`: executes the shipped ARM64 table builder and vector
+  and scalar loops against a floating-point oracle, including four disjoint
+  build partitions, guards, uneven pitches and narrow/odd widths.
+- `test_lut.py`: native execution against identity, cross-channel, random and
+  packaged Movie/AI HDR cubes, checking error and row padding.
 - `test_compare_selection.c`: loader-once behavior, no strength-setter dependency,
   invalid input and five persistence failure cases.
 - `test_onepro_rpc.py`: native full adapter and fake HAL; dispatches the old
   path and rejects failures flushing any of its six source/destination planes.
 - rc4 also passed 1536 ARM64 geometry cases, 99 invalid descriptors and
-  full-frame vendor-kernel tests. The warp itself is unchanged in rc5.
+  full-frame vendor-kernel tests. rc6 changes only the legacy branch's input
+  disparity scaling; the Pro+ CPU warp geometry remains unchanged.
 - The installer regression suite is run again for the new package version.
 
 Host tests establish the buffer behavior, not the appearance through the optics.
@@ -116,7 +146,7 @@ This flag builds only the One Pro package. It cannot be combined with the old
 single-view `--capture-real3d` diagnostic, because mesh modifies its source view.
 It does not promote the package to a public GitHub release.
 
-## Installed candidate and verification evidence
+## Previous installed candidate and verification evidence
 
 - BIN: `outputs/v0.7.0-rc5/XREAL-one-pro-Pilot2-RU-0.7.0-rc5.bin`
 - BIN SHA256: `e5bf66863c172242f56b32bec6700124ac58d874f15ea0b6b6535fdc9e18978c`.
@@ -128,5 +158,30 @@ It does not promote the package to a public GitHub release.
 - Installed once through front USB on One Pro X1112010 on 2026-10-20.
   All 71 files matched on readback. One USB reconnect restarted verification
   without rewriting the package; no rollback. The extra libdl ABI hash matched.
-- Physical confirmation of two separately selectable modes and usable depth
-  control is pending. Successful host tests/readback are not visual confirmation.
+- Physical feedback: overlapping mode rows, displaced ghosting in Real3D,
+  and Movie lag. Successful host tests/readback did not establish correct layout.
+
+## rc6 intermediate candidate
+
+- BIN: `outputs/v0.7.0-rc6/XREAL-one-pro-Pilot2-RU-0.7.0-rc6.bin`.
+- SHA256: `24c23dc0d85807ca25a5988a906ac68e9c8d8a8c7895c6318bb902f2828ea2ea`.
+- Build provenance: `outputs/v0.7.0-rc6/build-report.json`.
+- Device logs and installation evidence: `outputs/real3d-rc6/`.
+- Physical confirmation of row layout, ghosting and Movie smoothness is pending.
+
+## rc7 candidate
+
+- Includes the rc6 changes and the hidden-SBS layout correction.
+- BIN: `outputs/v0.7.0-rc7/XREAL-one-pro-Pilot2-RU-0.7.0-rc7.bin`.
+- SHA256: `721e08d0828e116ad18d26168d43a5fc9788ba3ce52e0b34a7c234159b5bde43`.
+- Build provenance: `outputs/v0.7.0-rc7/build-report.json`.
+- Installation evidence: `outputs/real3d-rc7/`; the pre-session Pilot backup is
+  `outputs/real3d-rc6/pilot-before-rc6.zip` (98,590,442 bytes, 73 entries,
+  SHA256 `3c01bac48451f9f07ac64907a99a4a04865337f5f7140a93bd8f17aba02624d7`).
+- Shipped ARM64 UI, LUT and full-frame legacy bridge tests passed.
+- Installed through front USB on One Pro X1112010 on 2026-10-21. All 71 files
+  matched on readback (`outputs/real3d-rc7/candidate-install.json`). A USB
+  reconnect restarted readback without rewriting the package. rc6 was also
+  installed/read back during this session before the hidden-SBS case was fixed;
+  the final installed package is rc7. No rollback was performed.
+- Physical confirmation is pending.

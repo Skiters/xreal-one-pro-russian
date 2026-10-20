@@ -55,7 +55,9 @@ static void make_item(U source) {
 }
 static void layout(U list) {
     U begin=pointer(list,0x10), end=pointer(list,0x18);
-    if (end-begin!=5*0x120) return;
+    /* Native navigation excludes unavailable/hidden modes (for example SBS
+     * for some inputs). Real3D rows must remain separate in that case too. */
+    if (end<begin || end-begin>5*0x120 || (end-begin)%0x120) return;
     unsigned index=0;
     for (U it=begin;it<end;it+=0x120,++index) {
         U box=pointer(it,0x38);
@@ -107,6 +109,10 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
             if (n==5) {
                 U vector[3]={(U)entries,(U)(entries+5),(U)(entries+5)};
                 r[0]=invoke(0x10cc28,r[0],(U)vector,r[2],r[3]);
+                /* Registration reparents rows and restores cached coordinates.
+                 * The clone initially has the same y as the original. Apply
+                 * the five-row layout AFTER this native repositioning. */
+                layout(osd+0x238bf50);
                 return;
             }
         }
@@ -117,9 +123,11 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
         /* Only patched native selection/highlight calls reach this branch.
          * Other menu groups and their enums pass through without changes.
          */
-        if (item_ready && r[0]==osd+0x238bf50 && r[1]==3)
+        U list=r[0];
+        if (item_ready && list==osd+0x238bf50 && r[1]==3)
             r[1]=xreal_compare_algorithm()==1 ? 3 : 4;
         r[0]=invoke(0x10a5f8,r[0],r[1],r[2],r[3]);
+        if (item_ready && list==osd+0x238bf50) layout(list);
     }
 }
 #endif

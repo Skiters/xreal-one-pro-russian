@@ -62,7 +62,7 @@ def test(path):
         u.mem_write(dst[p],bytes([0xed])*(ds[p]*heights[p]))
     args=D+0x2000000;depth=args+0x1000
     u.mem_write(args,struct.pack('<6Q6I',*src,*dst,*ss,*ds))
-    u.mem_write(depth,bytes([32])*(480*270))  # Q3 = four pixels per eye.
+    u.mem_write(depth,bytes([32])*(480*270))  # Q3 = four pixels TOTAL, two per eye.
     pending=[];seen=[]
     def hook(uc,address,size,unused):
         x0,x1,x2,x3=[uc.reg_read(r) for r in (UC_ARM64_REG_X0,UC_ARM64_REG_X1,UC_ARM64_REG_X2,UC_ARM64_REG_X3)]
@@ -113,7 +113,7 @@ def test(path):
     for p in range(3):
         left=bytes(u.mem_read(src[p],ss[p]*heights[p]))
         right=bytes(u.mem_read(dst[p],ds[p]*heights[p]))
-        shift=4 if p==0 else 2
+        shift=2 if p==0 else 1
         for y in range(heights[p]):
             assert left[y*ss[p]+160:y*ss[p]+widths[p]-160]==originals[p][y*ss[p]+160+shift:y*ss[p]+widths[p]-160+shift]
             assert right[y*ds[p]+160:y*ds[p]+widths[p]-160]==originals[p][y*ss[p]+160-shift:y*ss[p]+widths[p]-160-shift]

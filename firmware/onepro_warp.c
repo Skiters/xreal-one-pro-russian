@@ -133,11 +133,13 @@ int xreal_onepro_warp(u8 *src[3], u8 *dst[3], const u32 *ss, const u32 *ds,
                        (ds[i] != 960 && ds[i] != 1024))) return -22;
     int rc = load_kernel();
     if (rc) return rc; /* No source buffer has been changed. */
-    /* Legacy mesh takes integer disparity, not the new Q2/Q3/Q4 map.
-     * Truncation bounds displacement by the supplied map; never amplify it. */
+    /* Legacy mesh shifts BOTH views by +/-d, while the CPU port shifts
+     * one view by d. Split the supplied displacement between the two eyes
+     * to avoid doubling their separation. Retain native strength scaling
+     * and the original kernel's view ordering; no sign inversion here. */
     u32 maximum = 0;
     for (u32 i = 0; i < sizeof(integer_depth); ++i) {
-        u32 value = depth[i] >> fractional_bits;
+        u32 value = depth[i] >> (fractional_bits+1);
         integer_depth[i] = (u8)value;
         if (value > maximum) maximum = value;
     }

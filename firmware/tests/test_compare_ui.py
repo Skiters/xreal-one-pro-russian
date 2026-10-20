@@ -61,6 +61,7 @@ def test(path):
     writeq(listp+16,vec);writeq(listp+24,vec)
     writeq(ui+0x268,D+0x800)
     count=0; selected=2; depth=4; active=0; registered=[]; trace=[]; native_open=[]
+    positions={}; sizes={}
     def ret(value=0):
         u.reg_write(UC_ARM64_REG_X0,value)
         u.reg_write(UC_ARM64_REG_PC,u.reg_read(UC_ARM64_REG_LR))
@@ -98,6 +99,13 @@ def test(path):
         elif offset==0x10cc28:
             begin,end=readq(b),readq(b+8)
             registered=[readq(p) for p in range(begin,end,8)]
+            # Native registration (10d074..10d07c) restores cached row
+            # coordinates. The cloned row inherits the Real3D row's y=94.
+            # rc5's pre-registration layout was therefore insufficient.
+            for item,y in zip(registered,(0,94,94,188,282)):
+                positions[readq(item+0x38)]=(0,y)
+        elif offset==0x263880:positions[a]=(b,c)
+        elif offset==0x263a30:sizes[a]=(b,c)
         elif offset==0x10a5f8:active=b
         elif offset==0xf5b20:
             assert readi(a)==3;native_open.append(selected)
@@ -158,9 +166,20 @@ def test(path):
     run(O+0xf9bc0,[D+0x7000,vector,D+0x7100,D+0x7200],stop=O+0xf9bc4)
     assert [readi(p+0xb0) for p in registered]==[0,3,4,1,2]
     assert registered[2]==symbols['extra'], 'Navigation must retain a persistent item'
+    rectangles=[(*positions[readq(p+0x38)],*sizes[readq(p+0x38)]) for p in registered]
+    assert rectangles==[(0,i*76,760,72) for i in range(5)],rectangles
+    assert all(y+h<=410 for x,y,w,h in rectangles), 'Rows must fit native viewport'
+    assert all(rectangles[i][1]+rectangles[i][3]<=rectangles[i+1][1] for i in range(4))
+    # Native navigation omits hidden SBS modes on some inputs. rc6's exact
+    # five-entry guard skipped layout for this valid three-item list.
+    writeq(listp+24,vec+3*0x120)
+    for p in registered[1:3]:positions[readq(p+0x38)]=(0,94)
+    run(O+0xf49a4,[listp,3],stop=O+0xf49a8)
+    assert [positions[readq(p+0x38)] for p in registered[:3]]==[(0,0),(0,76),(0,152)]
     assert not any(call[0] in (0x16c558,0x1743f8) for call in trace)
     print('ARM64 UI: identical native row styles, five distinct entries, both callbacks, '
-          'separate strength, correct highlight and persistent navigation registration passed.')
+          'separate strength, post-registration non-overlapping rows, correct highlight '
+          'and persistent navigation registration passed.')
 
 
 if __name__=='__main__':test(sys.argv[1])
