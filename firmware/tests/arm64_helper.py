@@ -54,5 +54,3 @@ def run(symbol, source, depth, width, height, stride, depth_width, depth_height,
         raise AssertionError(f"{symbol}: PC={machine.reg_read(UC_ARM64_REG_PC):x}") from error
     assert machine.reg_read(UC_ARM64_REG_X0) == 0
     return bytes(machine.mem_read(DST, stride * height))
-
-
