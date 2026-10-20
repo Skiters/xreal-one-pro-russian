@@ -1,0 +1,25 @@
+{
+  "XREAL-one-Pilot2-RU-0.7.0.bin": {
+    "sha256": "2ee18973f0d5e1af7071ecab9f63e4d01fedd911bebef9628b04036ae24d8c7a",
+    "bytes": 97746937,
+    "readback_files": 71,
+    "validation": "Static validation only; One hardware test pending"
+  },
+  "XREAL-one-pro-Pilot2-RU-0.7.0.bin": {
+    "sha256": "721e08d0828e116ad18d26168d43a5fc9788ba3ce52e0b34a7c234159b5bde43",
+    "bytes": 99741719,
+    "readback_files": 71,
+    "validation": "Exact user-tested rc7; no new flash for release packaging"
+  },
+  "XREAL-1S-RU-Pilot1.9.1.bin": {
+    "sha256": "7db016115cb6d464d3b6e127037e944d8d97a6b9a9b9b229ef2c47fb44a6d0c3",
+    "bytes": 88317922,
+    "readback_files": 65,
+    "validation": "Only four language resources changed plus metadata/checksums; hardware test pending"
+  },
+  "XREAL-Russian-Updater-0.7.0.exe": {
+    "sha256": "ec91075526375d651b10c24f303bd66bd7196677430ebccaa6b220773851b302",
+    "bytes": 11782271,
+    "validation": "46 suite tests plus libdl guard test; packaged EXE self-test with all three BINs passed, firmware_writes=0"
+  }
+}

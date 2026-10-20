@@ -16,6 +16,7 @@ if (-not $FirmwareDirectory) { $FirmwareDirectory = "outputs/v$version" }
 $destination = Join-Path (Get-Location) "outputs/release-$version"
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 $bins = @('one-pro','one') | ForEach-Object { Join-Path $FirmwareDirectory "XREAL-$_-Pilot2-RU-$version.bin" }
+$bins += Join-Path $FirmwareDirectory 'XREAL-1S-RU-Pilot1.9.1.bin'
 foreach ($bin in $bins) {
     if (-not (Test-Path -LiteralPath $bin)) { throw "Build firmware first: $bin" }
     & $python -c "import sys;sys.path.insert(0,'installer');import backend;print(backend.identify_package(sys.argv[1]).key)" $bin

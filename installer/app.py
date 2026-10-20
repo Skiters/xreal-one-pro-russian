@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 import backend
+import diagnostics
 from version import VERSION
 
 
@@ -23,7 +24,8 @@ class App:
         self.events = queue.Queue()
         self.found = []
         self.build = None
-        root.title(f'XREAL One / One Pro · Русское меню · v{VERSION}')
+        self.last_support = None
+        root.title(f'XREAL One / One Pro / 1S · Русское меню · v{VERSION}')
         scale = float(root.tk.call('tk', 'scaling')) / (96 / 72)
         left, top, right, bottom = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
         if sys.platform == 'win32':
@@ -55,7 +57,7 @@ class App:
         frame = ttk.Frame(self.canvas, padding=20)
         self.content = frame
         self.content_window = self.canvas.create_window(0, 0, window=frame, anchor='nw')
-        ttk.Label(frame, text='Русское меню для XREAL One / One Pro', font=('Segoe UI', 19, 'bold')).pack(anchor='w')
+        ttk.Label(frame, text='Русское меню для XREAL One / One Pro / 1S', font=('Segoe UI', 19, 'bold')).pack(anchor='w')
         ttk.Label(frame, text='Подключите очки по USB → выберите устройство и прошивку → установите.',
                   wraplength=650).pack(anchor='w', pady=(10, 18))
         ttk.Label(frame, text='1. Выберите очки').pack(anchor='w')
@@ -84,6 +86,8 @@ class App:
         self.install_button.pack(anchor='w')
         self.verify_button = ttk.Button(frame, text='Проверить без записи', command=lambda: self.start(verify_only=True), state='disabled')
         self.verify_button.pack(anchor='w', pady=(6, 0))
+        self.diagnostic_button = ttk.Button(frame, text='Диагностика / отчёт об ошибке…', command=self.show_diagnostics)
+        self.diagnostic_button.pack(anchor='w', pady=(6, 0))
         self.progress = ttk.Progressbar(frame, maximum=100)
         self.progress.pack(fill='x', pady=(18, 10))
         self.status = tk.StringVar(value='Поиск подключённых очков…')
@@ -98,12 +102,87 @@ class App:
         root.after(100, self.refresh)
         root.after(100, self.poll)
 
+    def show_diagnostics(self):
+        if self.busy:
+            return
+        window = tk.Toplevel(self.root)
+        window.title('Диагностика XREAL — отчёт для поддержки')
+        window.geometry('700x540')
+        window.minsize(320, 240)
+        ttk.Label(window, text='Отчёт открыт для просмотра. Копирование и сохранение — по вашей кнопке. '
+                  'Серийный номер, имя компьютера и пути к вашим файлам не включаются. '
+                  'Проверка ничего не прошивает и ничего не отправляет в интернет.', wraplength=650).pack(fill='x', padx=12, pady=8)
+        area = ttk.Frame(window)
+        area.pack(fill='both', expand=True, padx=12)
+        text = tk.Text(area, wrap='word', font=('Consolas', 10), width=30, height=10)
+        scroll = ttk.Scrollbar(area, orient='vertical', command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        text.pack(fill='both', expand=True)
+        def display(value):
+            text.configure(state='normal')
+            text.delete('1.0', 'end')
+            text.insert('1.0', value)
+            text.configure(state='disabled')
+        display(diagnostics.render(self.last_support) if self.last_support else
+                'Нет отчёта за этот запуск. Нажмите «Проверить сейчас». BIN выбирать необязательно.')
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text.get('1.0', 'end-1c'))
+        def save():
+            path = filedialog.asksaveasfilename(parent=window, defaultextension='.txt',
+                initialfile='XREAL-diagnostic.txt', filetypes=[('Текстовый отчёт', '*.txt')])
+            if path:
+                try:
+                    Path(path).write_text(text.get('1.0', 'end-1c'), encoding='utf-8')
+                except OSError as error:
+                    messagebox.showerror('Не удалось сохранить', str(error), parent=window)
+        def run():
+            if self.busy:
+                return
+            self.busy = True
+            self.selected()
+            for control in (self.refresh_button, self.browse_button, self.combo):
+                control.configure(state='disabled')
+            run_button.configure(state='disabled')
+            previous = self.last_support
+            index = self.combo.current()
+            selected = self.found[index].copy() if index >= 0 else None
+            path = self.firmware_path
+            display('Проверка USB, версий и совместимости…')
+            results = queue.Queue()
+            def work():
+                results.put(diagnostics.collect(selected, path))
+            def finish():
+                try:
+                    value = results.get_nowait()
+                except queue.Empty:
+                    self.root.after(100, finish)
+                    return
+                self.busy = False
+                self.last_support = {'last_operation': previous.get('last_operation', previous), 'diagnostic': value} if previous else value
+                self.refresh_button.configure(state='normal')
+                self.browse_button.configure(state='normal')
+                self.combo.configure(state='readonly')
+                self.selected()
+                if window.winfo_exists():
+                    display(diagnostics.render(self.last_support))
+                    run_button.configure(state='normal')
+            threading.Thread(target=work, daemon=True).start()
+            self.root.after(100, finish)
+        buttons = ttk.Frame(window)
+        buttons.pack(fill='x', padx=12, pady=8)
+        run_button = ttk.Button(buttons, text='Проверить сейчас', command=run)
+        run_button.pack(anchor='w')
+        ttk.Button(buttons, text='Скопировать отчёт', command=copy).pack(anchor='w')
+        ttk.Button(buttons, text='Сохранить TXT…', command=save).pack(anchor='w')
+
     def layout(self, _event=None):
         available = max(1, self.canvas.winfo_width())
         # On unusually narrow/high-DPI displays keep every control reachable
         # through horizontal scrolling instead of clipping a button.
         minimum = max(button.winfo_reqwidth() for button in
-                      (self.install_button, self.verify_button, self.refresh_button, self.browse_button)) + 40
+                      (self.install_button, self.verify_button, self.refresh_button, self.browse_button, self.diagnostic_button)) + 40
         width = max(available, minimum)
         self.canvas.itemconfigure(self.content_window, width=width)
         for label in self.labels:
@@ -118,6 +197,8 @@ class App:
         self.canvas.configure(scrollregion=self.canvas.bbox(self.content_window))
 
     def mousewheel(self, event):
+        if event.widget.winfo_toplevel() != self.root:
+            return
         if self.content.winfo_height() > self.canvas.winfo_height() and event.delta:
             units = max(1, abs(event.delta)//120)
             self.canvas.yview_scroll(-units if event.delta > 0 else units, 'units')
@@ -147,6 +228,10 @@ class App:
             self.description.configure(text='Русская Pilot 1.9.1 для XREAL One и One Pro. '
                                        'Официальный пакет Pilot 1.9.1 для обеих моделей имеет один MD5. '
                                        'Переведено 437 строк, шрифт согласован. На One перевод пока не проверен.')
+        elif self.firmware is backend.ONE_S_STANDARD:
+            self.description.configure(text='XREAL 1S: русификация собственной штатной Pilot 1.9.1. '
+                'Без переноса функций Pro+, без изменений драйверов, разрешения и яркости. '
+                'На физической 1S пока не проверена.')
         elif self.firmware is backend.ONE_EXPERIMENTAL:
             self.description.configure(text='Тестовая Pilot 2.0 только для обычных XREAL One. '
                                        'Русское меню, AI HDR и Real3D 2D→3D с CPU-обработкой. '
@@ -165,7 +250,7 @@ class App:
                 f"\nСборка {self.build.get('release', '?')} · {self.build['build_id'][:12]}. "
                 'Полный 3D LUT, согласованное смещение Y/U/V, постоянный пул потоков. '
                 'Перед записью проверяются системные библиотеки и карта видеопамяти. '
-                'Это кандидат: проверка функций на конкретной модели ещё требуется.')
+                'Результаты проверки опубликованных BIN смотрите в описании выпуска.')
         self.selected()
 
     def choose_firmware(self):
@@ -179,6 +264,7 @@ class App:
         self.firmware_path = None
         self.build = None
         self.selected()
+        self.busy = True
         self.browse_button.configure(state='disabled')
         self.file_name.set(Path(path).name)
         self.status.set('Проверка BIN и контрольных сумм…')
@@ -189,6 +275,7 @@ class App:
             firmware, build = backend.identify_package(path, return_manifest=True)
             self.events.put(('file_ok', path, (firmware, build)))
         except Exception as error:
+            self.events.put(('support', diagnostics.report('bin', 'validation', error=error), 0))
             self.events.put(('file_error', str(error), 0))
 
     def refresh(self):
@@ -196,7 +283,7 @@ class App:
             return
         try:
             self.found = backend.devices()
-            self.combo['values'] = [f"XREAL {'One' if d.get('product_id') == 0x0438 else 'One Pro'} — устройство {i+1}" +
+            self.combo['values'] = [f"XREAL {({0x0438: 'One', 0x0436: 'One Pro', 0x043e: '1S'}).get(d.get('product_id'), 'Unknown')} — устройство {i+1}" +
                                     (f" · {d['serial_number'][-6:]}" if d.get('serial_number') else '')
                                     for i, d in enumerate(self.found)]
             self.combo.set('')
@@ -205,6 +292,7 @@ class App:
             self.status.set('Выберите очки в списке.' if self.found else
                             'Очки не найдены. Подключите кабель с передачей данных и нажмите «Обновить список».')
         except Exception as e:
+            self.last_support = diagnostics.report('diagnostic', 'usb', error=e)
             self.status.set('Не удалось получить список USB-устройств: '+str(e))
 
     def start(self, verify_only=False):
@@ -245,20 +333,31 @@ class App:
             self.events.put(('done', '', 100))
         except Exception as e:
             report['error'] = str(e)
+            report['exception'] = type(e).__name__
             log = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater' / 'last-error.txt'
             try:
                 log.parent.mkdir(parents=True, exist_ok=True)
                 log.write_text(traceback.format_exc(), encoding='utf-8')
             except OSError:
                 pass
-            self.events.put(('error', str(e), 0))
         finally:
+            progress_value = report.get('progress', 0)
+            stage = 'readback' if progress_value >= 90 else 'restart' if progress_value >= 89 else 'apply' if progress_value >= 86 else 'transfer' if progress_value >= 1 else 'preflight'
+            support = diagnostics.report(report['operation'], stage, ok=report['ok'],
+                error=report.get('error'), exception=report.get('exception'), usb_pid=f"{selected.get('product_id', 0):04x}",
+                firmware=firmware.key, package_sha256=report.get('package_sha256'),
+                progress=progress_value, build_id=(report.get('selected_build') or {}).get('build_id'))
+            support['last_stage'] = diagnostics.clean(report.get('last_stage', ''))
+            self.events.put(('support', support, 0))
+            if not report['ok']:
+                self.events.put(('error', support['code'] + ': ' + report.get('error', ''), 0))
             report['finished_utc'] = datetime.now(timezone.utc).isoformat()
             try:
                 folder = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater'
                 folder.mkdir(parents=True, exist_ok=True)
                 name = datetime.now(timezone.utc).strftime('report-%Y%m%d-%H%M%S-%f.json')
                 (folder/name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+                (folder/'support-report.txt').write_text(diagnostics.render(support), encoding='utf-8')
             except OSError:
                 pass
             if sys.platform == 'win32':
@@ -268,13 +367,17 @@ class App:
         try:
             while True:
                 kind, text, percent = self.events.get_nowait()
-                if kind == 'file_ok':
+                if kind == 'support':
+                    self.last_support = text
+                elif kind == 'file_ok':
+                    self.busy = False
                     self.firmware, self.build = percent
                     self.firmware_path = Path(text)
                     self.browse_button.configure(state='normal')
                     self.status.set('BIN проверен. Выберите очки и запустите установку.')
                     self.firmware_changed()
                 elif kind == 'file_error':
+                    self.busy = False
                     self.file_name.set('Файл не выбран')
                     self.browse_button.configure(state='normal')
                     self.status.set('BIN не подходит: '+text)
@@ -291,7 +394,7 @@ class App:
                     self.combo.set('')
                     if kind == 'error':
                         self.status.set('Установка не подтверждена. '+text)
-                        messagebox.showerror('Не удалось завершить установку', text, parent=self.root)
+                        messagebox.showerror('Не удалось завершить установку', text + '\nОткройте «Диагностика / отчёт об ошибке» и скопируйте отчёт.', parent=self.root)
         except queue.Empty:
             pass
         self.root.after(100, self.poll)

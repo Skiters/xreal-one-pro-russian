@@ -1,14 +1,14 @@
-# Pilot 2 CPU adapter — 0.7.0-rc1
+# Pilot adapters and model packages — 0.7.0
 
-This is a candidate port of the Pilot component, not a new SoC/DSP firmware.
+One Pro release payload is the exact user-confirmed rc7 BIN. One remains an experimental Pilot port. 1S uses stock Pilot 1.9.1 with language resources only. These are not new SoC/DSP firmwares.
 Closed XREAL binaries are pinned inputs. The reproducible part is our adapter
 and deterministic repackaging of those inputs.
 
 ## What changed
 
 - RGB processing uses the complete 17³ LUT, including interactions between
-  channels. R/G interpolation is cached in 17 blue slices (8.5 MiB); each pixel
-  requires two lookups. Intermediate Q4 precision differs from the floating
+  channels. R/G interpolation is cached in 17 blue slices (4.25 MiB); each pixel
+  requires two lookups. Intermediate Q2 precision differs from the floating
   reference by at most one RGB8 level in the included tests.
 - Real3D uses the recovered mode-2 I420 ABI explicitly. A chroma sample moves
   half as far as a luma pixel. Fractional chroma positions are interpolated.
@@ -47,7 +47,7 @@ No guessed system library, alternate compiler ABI, or host libc is accepted.
 The builder does not access USB or write to a device.
 
 `python firmware/import_device_abi.py --output C:/xreal-inputs/sysroot`
-captures these libraries and a local ABI report from one connected device,
+captures the core libraries and a local ABI report from one connected device,
 without firmware-write commands. Keep device captures outside Git.
 
 ```powershell
@@ -56,7 +56,7 @@ python firmware/build.py --clang C:/toolchain/bin/clang.exe `
 powershell -ExecutionPolicy Bypass -File installer/build.ps1
 ```
 
-The output includes two model-specific BINs, the adapter ELF and a build
+Use `--model one` to build only One. `--compare-onepro-warp` builds the dual-row One Pro comparison. The output includes model-specific BINs, the adapter ELF and a build
 report. Every BIN contains source hashes, compiler identity, input hashes,
 profile, ABI constraints and build ID. ZIP entries have fixed timestamps
 and ordering. Use the same Python/zlib and compiler to reproduce bytes.
@@ -108,3 +108,11 @@ These host tests do not validate the target's HAL or optics.
 
 No automatic firmware rollback is implemented. A failure produces a report;
 subsequent fixes require another candidate, not an implicit downgrade.
+
+## 1S translation only
+
+Run `python firmware/build_1s.py --stock <official-1s.bin> --reference <original-pilot.zip> --translation <approved-russian-1.9.1.bin> --output outputs/v0.7.0/XREAL-1S-RU-Pilot1.9.1.bin`.
+
+All three inputs are hash-pinned. The original 1S Pilot must match every file of the reference stock ZIP. Only the CSV, two TTFs and embedded-font OSD are copied from the approved translation. Checksums and the 1S target descriptor are regenerated; every other vendor file is retained byte-for-byte. The builder never accesses USB. See [compatibility evidence](../installer/compatibility.md).
+
+For the 0.7.0 release the One Pro asset is a copy of rc7, SHA256 `721e08d0828e116ad18d26168d43a5fc9788ba3ce52e0b34a7c234159b5bde43`; internal rc7 provenance is retained. Rebuilding with current version/source provenance produces different bytes and must not be described as the same hardware-tested payload.

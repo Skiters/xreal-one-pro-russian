@@ -99,7 +99,9 @@ def build(args):
         contents = {i.filename: z.read(i) for i in z.infolist()}
         attrs = {i.filename: copy.copy(i) for i in z.infolist()}
     results = {}
-    for model in (('one-pro',) if args.compare_onepro_warp else ('one-pro', 'one')):
+    if args.model == 'one' and args.compare_onepro_warp:
+        raise ValueError('One Pro mesh is not supported on One')
+    for model in ((args.model,) if args.model else (('one-pro',) if args.compare_onepro_warp else ('one-pro', 'one'))):
         files = dict(contents)
         files['pilot/bin/libxreal_cpu_adapter.so'] = library.read_bytes()
         if args.compare_onepro_warp:
@@ -173,6 +175,7 @@ if __name__ == '__main__':
     p.add_argument('--stock', type=Path, required=True, help='Original vendor Pilot 2 ZIP')
     p.add_argument('--base', type=Path, default=ROOT/'outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin')
     p.add_argument('--output', type=Path, default=ROOT/f'outputs/v{VERSION}')
+    p.add_argument('--model', choices=('one', 'one-pro'))
     p.add_argument('--capture-real3d', action='store_true',
                    help='Diagnostic build: save one bounded input/warped/depth PGM capture on device')
     p.add_argument('--compare-onepro-warp', action='store_true',

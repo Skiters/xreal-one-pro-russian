@@ -1,39 +1,28 @@
-# XREAL Russian Updater 0.7.0-rc1
+# Windows updater 0.7.0
 
-Windows 10/11 x64, переносимый EXE и отдельно выбранный BIN. [Установка и таблица файлов](../README.md).
+Portable EXE; separate model-specific BINs. End-user instructions: [project README](../README.md).
 
-Версия задаётся в `version.py`, используется в заголовке окна, имени EXE, JSON-отчётах и manifest новых BIN. Старые корректные BIN поддерживаются с их прежними ограничениями моделей; привязки к одному SHA256 нет.
+## Build
 
-## Проверки до записи
-
-`package_format.py` проверяет заголовок и CRC контейнера, все внутренние SHA256, канонические пути внутри `pilot/`, типы ZIP-записей и ограничения размеров. Ссылки, специальные файлы, дубликаты, обход каталогов и шифрованные записи запрещены. ELF проверяется на AArch64/64-bit/little-endian и границы сегментов. Основная конфигурация должна содержать JSON-объект `display`; модельные файлы могут наследовать её настройки.
-
-`profiles.py` проверяет manifest новых пакетов и читает пять системных библиотек и карту MMZ устройства. Их несовпадение останавливает установку до команды 4628. Это дополнительная проверка ABI; для старых BIN без manifest остаётся прежняя проверка модели/версии. Она не доказывает аппаратную совместимость произвольных модификаций.
-
-## Передача и проверка
-
-Используется HID-протокол сайта: 4628 — заголовок, 4629 — блоки до 490 байт, 4630 — применение. Отдельные блоки записи не повторяются: протокол не гарантирует идемпотентность. Выбранное устройство не заменяется другим.
-
-После перезапуска считываются **все файлы пакета**, включая перевод, шрифты, библиотеки и конфигурации. Проверка занимает дольше прежнего выборочного чтения. При разрыве соединения повторяется только чтение целиком с новым соединением. Установка подтверждается отдельно от успешной передачи. Автоматического отката нет.
-
-JSON-отчёты успеха и ошибки сохраняются в `%LOCALAPPDATA%/XREAL-Russian-Updater/`. В них версия EXE, имя BIN, профиль/build ID при успехе, хеш пакета, фаза операции и результаты чтения. Серийные номера и резервные копии в Git не публикуются.
-
-## Сборка
-
-Python 3.13, зависимости зафиксированы в `requirements.txt`. Сначала соберите [два BIN](../firmware/README.md), затем:
+Pinned dependencies: `requirements.txt`. Python 3.13 x64 and PyInstaller 6.22.3 were used. In the repository root:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer/build.ps1
+powershell -ExecutionPolicy Bypass -File installer/build.ps1 -FirmwareDirectory outputs/v0.7.0
 ```
 
-Скрипт выполняет тесты, проверяет оба BIN и собирает отдельный EXE через PyInstaller. Результат: `outputs/release-0.7.0-rc1/` — EXE, два BIN под разные модели, `build-report.json`, описание и `SHA256SUMS.txt`. BIN внутрь EXE не встроены. Старый `build-one-test.ps1` относится к исторической версии 0.6.0 и не используется для новой сборки.
+The directory must contain `XREAL-one-pro-Pilot2-RU-0.7.0.bin`, `XREAL-one-Pilot2-RU-0.7.0.bin`, `XREAL-1S-RU-Pilot1.9.1.bin`, and `build-report.json`. Output: `outputs/release-0.7.0`. The EXE contains no firmware, credentials or network reporting. Release BINs are distributed as assets; vendor inputs and device backups remain local.
 
-## Диагностика без записи
-
-```text
-XREAL-Russian-Updater-0.7.0-rc1.exe --self-test report.json --bin firmware.bin
-XREAL-Russian-Updater-0.7.0-rc1.exe --check-device report.json --bin firmware.bin
-XREAL-Russian-Updater-0.7.0-rc1.exe --verify-device report.json --bin firmware.bin
+```powershell
+python -m unittest discover -s installer -p 'test_*.py' -v
+XREAL-Russian-Updater-0.7.0.exe --self-test report.json --bin selected.bin
 ```
 
-Первый режим проверяет BIN и интерфейс. Второй читает версии и ABI нового профиля. Третий дополнительно сравнивает установленные файлы. Последние два требуют ровно одни подключённые очки. CLI сохраняет JSON также при ошибке. Эти команды не отправляют команды записи прошивки.
+`--self-test` validates the package and constructs Tk without firmware writes. `--check-device report.json --bin selected.bin` reads model, versions and ABI. `--verify-device` additionally reads installed files. These switches never flash. CLI failures write their report and return nonzero.
+
+## Diagnostic support
+
+GUI **Диагностика / отчёт об ошибке** shows a readable support report. Users can inspect, copy or save it as TXT. **Проверить сейчас** enumerates devices and issues version queries only; with a BIN it also validates the container, identity and required ABI by reading. It never calls `transmit` or update commands 4628/4629/4630. No serial numbers, USB paths, local file paths or machine/user names are included. No network transmission occurs.
+
+Error reports contain `XR-<operation>-<stage>`, the original sanitized error, updater version, model/Pilot/SoC when available, BIN SHA256, and build ID. Codes identify stages, not uniquely every possible cause; the full report should accompany an issue. The latest operation is preserved when diagnostic checks follow it. Local detailed reports and stack traces remain under `%LOCALAPPDATA%/XREAL-Russian-Updater`; the shareable operation report is `support-report.txt`.
+
+The app disables flashing while diagnostics are running. Choosing a BIN, listing devices, opening a diagnostic dialog, or starting the EXE never starts a firmware update. Device selection is bound to the exact HID path and serial internally; neither is exported in the support report. Unknown firmware targets, unsupported SoC/Pilot/SKU and mismatched CPU ABI are rejected before writing. A positive HID write alone is not success; protocol acknowledgement and full readback are required.

@@ -29,25 +29,25 @@ def archive(name, content):
     return stream.getvalue()
 
 
-def one_fixture():
+def one_fixture(firmware=b.ONE_EXPERIMENTAL, target=None):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w') as z:
         lines = []
-        for name in b.ONE_EXPERIMENTAL.files:
+        for name in firmware.files:
             if name == 'pilot/checksums.sha256':
                 continue
             content = elf_fixture() if name.startswith('pilot/bin/') else b'data'
             if name.startswith('pilot/conf/'):
                 content = b'{"display": {}}'
             if name == 'pilot/xreal-target.json':
-                content = json.dumps(b.ONE_TARGET).encode()
+                content = json.dumps(target or b.ONE_TARGET).encode()
             z.writestr(name, content)
             lines.append(hashlib.sha256(content).hexdigest()+'  ./'+name[6:])
         z.writestr('pilot/checksums.sha256', '\n'.join(lines)+'\n')
     header = bytearray(64)
     struct.pack_into('<II', header, 8, 0x1500, 4)
-    header[16:36] = b.PILOT_2.encode()
-    data = header + stream.getvalue().translate(bytes(i ^ 0x66 for i in range(256)))
+    header[16:36] = firmware.pilot.encode()
+    data = header + stream.getvalue().translate(bytes(i ^ firmware.xor_key for i in range(256)))
     data[4:8] = (len(data)-8).to_bytes(4, 'little')
     data[:4] = b.container_crc(data).to_bytes(4, 'little')
     return data

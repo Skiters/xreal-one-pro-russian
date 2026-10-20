@@ -8,6 +8,35 @@ from app import App
 
 
 class LayoutTests(unittest.TestCase):
+    def test_diagnostic_dialog_displays_and_copies_visible_report(self):
+        from tkinter import ttk
+        import diagnostics
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            with patch('backend.devices', return_value=[]), patch('backend.update') as update:
+                app = App(root)
+                app.last_support = diagnostics.report('update', 'transfer', error=OSError('USB disconnected'))
+                app.show_diagnostics()
+                root.update_idletasks()
+                dialog = next(w for w in root.winfo_children() if isinstance(w, tk.Toplevel))
+                def children(widget):
+                    for child in widget.winfo_children():
+                        yield child
+                        yield from children(child)
+                widgets = list(children(dialog))
+                text = next(w for w in widgets if isinstance(w, tk.Text))
+                self.assertIn('XR-UPDATE-TRANSFER', text.get('1.0', 'end'))
+                button = next(w for w in widgets if isinstance(w, ttk.Button) and
+                              w.cget('text') == 'Скопировать отчёт')
+                button.invoke()
+                self.assertEqual(root.clipboard_get(), text.get('1.0', 'end-1c'))
+                update.assert_not_called()
+        finally:
+            for timer in root.tk.call('after', 'info'):
+                root.after_cancel(timer)
+            root.destroy()
+
     def test_small_windows_at_three_dpi_scales(self):
         for dpi in (96, 144, 192):
             with self.subTest(dpi=dpi):
@@ -21,7 +50,7 @@ class LayoutTests(unittest.TestCase):
                         root.update()
                         self.assertGreater(app.content.winfo_height(), app.canvas.winfo_height())
                         app.canvas.yview_moveto(0)
-                        app.mousewheel(SimpleNamespace(delta=-120))
+                        app.mousewheel(SimpleNamespace(delta=-120, widget=app.canvas))
                         self.assertGreater(app.canvas.yview()[0], 0)
                         app.canvas.yview_moveto(1)
                         root.update_idletasks()

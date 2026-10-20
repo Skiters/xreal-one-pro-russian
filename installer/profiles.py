@@ -20,6 +20,7 @@ PROFILES = {
                'panel_config': 'gf', 'hardware_evidence': 'pending'},
 }
 MMZ_START, MMZ_END = 0x33000000, 0x40000000
+DL_SHA = 'd9c4fd4bbf21b3f5db5b8ed61eb2f7aaf98a06dba15e881e1058e64755d9f64f'
 
 
 def validate_build(build, firmware_key, pilot):
@@ -28,7 +29,7 @@ def validate_build(build, firmware_key, pilot):
     profile_id = 'one-603' if firmware_key == 'one-experimental' else 'one-pro-603'
     if (not isinstance(build, dict) or build.get('schema') != 2 or
             build.get('profile') != profile_id or build.get('pilot') != pilot or
-            build.get('soc') != SOC or firmware_key == 'standard' or
+            build.get('soc') != SOC or firmware_key in ('standard', '1s-standard') or
             not isinstance(build.get('build_id'), str) or
             not re.fullmatch('[0-9a-f]{64}', build['build_id']) or
             build.get('abi_libraries') != ABI_LIBRARIES or
@@ -38,6 +39,9 @@ def validate_build(build, firmware_key, pilot):
     encoded = (json.dumps(unsigned, ensure_ascii=False, sort_keys=True, indent=2)+'\n').encode()
     if hashlib.sha256(encoded).hexdigest() != build['build_id']:
         raise ValueError('Build ID не совпадает с manifest BIN.')
+    if build.get('comparison') and (profile_id != 'one-pro-603' or
+            build['comparison'].get('libdl_sha256') != DL_SHA):
+        raise ValueError('Неподдерживаемая библиотека сравнения Real3D.')
 
 
 def export_file(probe, path, maximum=8*1024*1024):
@@ -55,8 +59,11 @@ def export_file(probe, path, maximum=8*1024*1024):
 def check_abi(probe, build, emit=lambda *_: None):
     """Read-only preflight, before the first firmware-writing command."""
     observed = {}
-    for index, (path, expected) in enumerate(ABI_LIBRARIES.items(), 1):
-        emit(f'Проверка системных библиотек: {index} из {len(ABI_LIBRARIES)}', 0)
+    libraries = dict(ABI_LIBRARIES)
+    if build.get('comparison'):
+        libraries['/lib/libdl-2.25.so'] = DL_SHA
+    for index, (path, expected) in enumerate(libraries.items(), 1):
+        emit(f'Проверка системных библиотек: {index} из {len(libraries)}', 0)
         actual = hashlib.sha256(export_file(probe, path)).hexdigest()
         observed[path] = actual
         if actual != expected:
