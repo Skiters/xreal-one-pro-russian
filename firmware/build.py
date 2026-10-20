@@ -23,6 +23,7 @@ STOCK_SHA = 'c052575b989c9811c07563bf61ff3360c32a275bc3bb4dd426e211e94525759b'
 SOURCES = ['firmware/cpu_adapter.c', 'firmware/lut_fast.c', 'firmware/runtime.c',
            'firmware/runtime.h', 'work/3d-lab/real3d_cpu.c', 'firmware/build.py',
            'installer/profiles.py', 'installer/package_format.py', 'installer/version.py',
+           'firmware/compare_ui.c', 'firmware/ui_dispatch.S', 'firmware/generate_compare_ui.py',
            'firmware/onepro_warp.c', 'firmware/onepro_warp.h', 'firmware/compare_modes.py']
 
 
@@ -65,6 +66,13 @@ def build(args):
         compare_checked((args.sysroot/'libdl.so.2').read_bytes(), DL_SHA)
         mesh = compare_checked(args.onepro_mesh.read_bytes(), MESH_SHA)
         link_names['libdl.so.2'] = '/lib/libdl-2.25.so'
+    generated = []
+    if args.compare_onepro_warp:
+        from generate_compare_ui import generate
+        with zipfile.ZipFile(io.BytesIO(base[64:].translate(bytes(i ^ 0x66 for i in range(256))))) as z:
+            generated_path = out/'compare_row.S'
+            generated_path.write_text(generate(z.read('pilot/bin/libnr_osd.so')), newline='\n')
+            generated = [str(generated_path)]
     source_hashes = {s: sha((ROOT/s).read_bytes()) for s in SOURCES}
     library = out / 'libxreal_cpu_adapter.so'
     flags = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
@@ -74,7 +82,7 @@ def build(args):
         flags.append('-DXREAL_CAPTURE_REAL3D=1')
     if args.compare_onepro_warp:
         flags.append('-DXREAL_COMPARE_ONEPRO_WARP=1')
-    subprocess.run([str(args.clang), *flags, *[s for s in SOURCES if s.endswith('.c')],
+    subprocess.run([str(args.clang), *flags, *[s for s in SOURCES if s.endswith(('.c', '.S'))], *generated,
                     '-L', str(args.sysroot.resolve()),
                     *['-l:'+n for n in link_names], '-o', str(library)],
                    cwd=ROOT, check=True)
@@ -128,7 +136,7 @@ def build(args):
             manifest['comparison'] = {
                 'scope': 'One Pro vendor mesh versus current Pro+ CPU port; shared Pilot 2 depth inference',
                 'onepro_mesh_sha256': MESH_SHA, 'libdl_sha256': DL_SHA,
-                'menu': 'Real3D algorithm; replaces strength selector in this test only',
+                'menu': 'Two Real3D mode entries; independent native four-level strength',
                 'default': 'Pro+ CPU port', 'physical_comparison': 'pending'}
         manifest['build_id'] = sha(encode(manifest))
         files['pilot/xreal-build.json'] = encode(manifest)

@@ -40,8 +40,8 @@ int xreal_compare_get(int *value) {
     *value = xreal_compare_algorithm();
     return 0;
 }
-int xreal_compare_set(int value, int (*vendor_set)(int)) {
-    if ((value != 1 && value != 2) || !vendor_set) return -22;
+int xreal_compare_set(int value) {
+    if (value != 1 && value != 2) return -22;
     (void)xreal_compare_algorithm();
     if (value == 1) {
         if (xreal_frame_lock()) return -5;
@@ -49,10 +49,7 @@ int xreal_compare_set(int value, int (*vendor_set)(int)) {
         xreal_frame_unlock();
         if (loaded) return loaded;
     }
-    /* Both comparisons use the same native Natural depth setting. The
-     * selector is separate from the vendor's depth-strength property. */
-    int rc = vendor_set(2);
-    if (rc) return rc;
+    /* Algorithm selection must never write the native depth-strength property. */
     if (xreal_frame_lock()) return -5;
     char byte = (char)('0' + value);
     int fd = open("/usrdata/real3d-algorithm.tmp", 1 | 64 | 512, 0600);

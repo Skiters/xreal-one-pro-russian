@@ -1,8 +1,7 @@
 """Hash-pinned OSD bridge for a local One Pro mesh / Pro+ port comparison.
 
-The existing 3D Effect slider becomes a two-position algorithm selector.
-Four UI reads are redirected; state-machine reads keep the real strength.
-The native setter is called with Natural (2) for either algorithm.
+A fifth native mode-list item selects Pro+ independently of depth strength.
+All four original depth levels and their handlers are kept byte-for-byte.
 """
 import csv
 import hashlib
@@ -18,9 +17,12 @@ from elftools.elf.elffile import ELFFile
 OSD_SHA = '8cebc5bc451833eb4dceadf602ba3a3d3cdbbde1e5d2646b43be29674e60726e'
 MESH_SHA = 'ce310b124ab82b909ef4b3a8264a6ba3c0b05a724a21bf6ebd8492f022d99e3d'
 DL_SHA = 'd9c4fd4bbf21b3f5db5b8ed61eb2f7aaf98a06dba15e881e1058e64755d9f64f'
-GET_CALLS = (0xf2f5c, 0xf443c, 0xf6788, 0xf6aac)
-SET_CALL = 0xf2f2c
-NATIVE_GET, NATIVE_SET = 0x16c558, 0x1743f8
+DEPTH_CALLS = (0xf2f5c, 0xf443c, 0xf6788, 0xf6aac, 0xf2f2c)
+HOOKS = {0x540e8: 0x26e2a8, 0xf9aa8: 0x10c338,
+         0xf9bc0: 0x10cc28, 0xf75c8: 0xf3070}
+HOOKS.update({pc: 0x10a5f8 for pc in (
+    0xf3170, 0xf39c8, 0xf3a7c, 0xf49a4, 0xf4a68, 0xf4be8,
+    0xf4d10, 0xf4dec, 0xf59d0, 0xf5ba8, 0xf5f9c)})
 
 
 def checked(data, expected):
@@ -52,7 +54,7 @@ def patch_osd(data):
              if s['p_type'] == 'PT_NOTE']
     if len(notes) != 1 or notes[0][1]['p_vaddr'] != 0x200 or notes[0][1]['p_filesz'] != 36:
         raise ValueError('Expected disposable GNU build-ID note')
-    # Replace only the build-ID note with two branch stubs (12 + 20 bytes).
+    # Replace only the build-ID note with a 16-byte dispatcher thunk.
     # Reuse its PHDR for an appended RW metadata segment. Unlike a generic ELF
     # rewrite this preserves EVERY vendor/font PT_LOAD address and avoids RWX.
     offset = (len(data) + 4095) & ~4095
@@ -81,7 +83,7 @@ def patch_osd(data):
     library_name = string('libxreal_cpu_adapter.so')
     symbols = bytearray(section('.dynsym'))
     count = len(symbols) // 24
-    for name in ('xreal_compare_get', 'xreal_compare_set'):
+    for name in ('xreal_ui_dispatch', 'xreal_compare_get'):
         symbols.extend(struct.pack('<IBBHQQ', string(name), 0x12, 0, 0, 0, 0))
     symbol_va = append('.dynsym', symbols)
     string_va = append('.dynstr', strings)
@@ -97,7 +99,7 @@ def patch_osd(data):
         name = strings[pos:strings.index(0, pos)]
         value = 0
         for byte in name:
-            value = (value << 4) + byte
+            value = ((value << 4) + byte) & 0xffffffff
             high = value & 0xf0000000
             if high: value ^= high >> 24
             value &= ~high
@@ -135,17 +137,12 @@ def patch_osd(data):
             raise ValueError(f'Unexpected OSD instruction at {pc:x}')
         put(pc, [value])
 
-    start, setter, got = 0x200, 0x210, va
-    put(start, [adrp(16, start, got), 0xf9400210, 0xd61f0200, 0xd503201f])
-    put(setter, [adrp(1, setter, NATIVE_SET),
-                 0x91000021 | ((NATIVE_SET & 4095) << 10),
-                 adrp(16, setter+8, got+8), 0xf9400610, 0xd61f0200])
-    for pc in GET_CALLS:
-        replace(pc, branch(pc, NATIVE_GET), branch(pc, start))
-    replace(SET_CALL, branch(SET_CALL, NATIVE_SET), branch(SET_CALL, setter))
-    replace(0xf67c0, 0x52800083, 0x52800043)
-    replace(0xf42dc, 0x911ee021, 0x911f8021)
-    replace(0xf432c, 0x911f0021, 0x911fc021)
+    start, got = 0x200, va
+    # x16 = original OSD load base. x17 = imported dispatcher.
+    put(start, [adrp(16, start, 0), adrp(17, start+4, got),
+                0xf9400231, 0xd61f0220])
+    for pc, target in HOOKS.items():
+        replace(pc, branch(pc, target), branch(pc, start))
     # Relocate section headers for tooling as well as the loader's dynamic tags.
     for index, sec in enumerate(elf.iter_sections()):
         at = elf['e_shoff'] + index*elf['e_shentsize']
@@ -173,22 +170,6 @@ def patch_osd(data):
 
 
 def patch_labels(data):
-    rows = list(csv.reader(io.StringIO(data.decode('utf-8-sig'))))
-    labels = {
-        'Mode3dEffectSetting': ('Real3D algorithm', 'Алгоритм Real3D'),
-        'SoftDepth': ('One Pro (mesh)', 'One Pro (mesh)'),
-        'BalancedDepth': ('Pro+ (CPU port)', 'Pro+ (CPU-порт)'),
-    }
-    found = set()
-    for row in rows[4:]:
-        if len(row) > 17 and row[1] in labels:
-            english, russian = labels[row[1]]
-            # Existing RU package uses Polish column 13, plus draft RU column 17.
-            row[4] = english
-            row[13] = row[17] = russian
-            found.add(row[1])
-    if found != set(labels):
-        raise ValueError('Missing OSD comparison labels')
-    stream = io.StringIO(newline='')
-    csv.writer(stream, lineterminator='\n').writerows(rows)
-    return b'\xef\xbb\xbf' + stream.getvalue().encode()
+    # Keep every native translation, including strength names/title, intact.
+    # The two new proper names are ASCII labels set by the menu bridge.
+    return data

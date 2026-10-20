@@ -23,7 +23,7 @@
 #undef dlsym
 #undef pthread_once
 
-static int fault, vendor_error, vendor_calls, locks, loads;
+static int fault, locks, loads;
 static char saved='?', temporary;
 static unsigned char vendor_memory[0x200000];
 int fixture_open(const char *path, int flags, ...) {
@@ -67,28 +67,21 @@ void xreal_frame_unlock(void) { assert(locks==1);--locks; }
 void xreal_parallel_run(void *(*fn)(void *),void *jobs,unsigned long stride,unsigned count) {
     (void)fn;(void)jobs;(void)stride;(void)count;assert(0);
 }
-static int vendor_set(int value) {
-    assert(value==2 && locks==0);++vendor_calls;return vendor_error;
-}
 int main(void) {
     int choice;
     assert(xreal_compare_get(&choice)==0 && choice==2); /* invalid saved byte */
-    assert(xreal_compare_set(0,vendor_set)==-22 && !vendor_calls);
-    assert(xreal_compare_set(3,vendor_set)==-22 && !vendor_calls);
-    assert(xreal_compare_set(1,0)==-22 && !vendor_calls);
-    assert(xreal_compare_set(1,vendor_set)==0 && saved=='1' && loads==1);
+    assert(xreal_compare_set(0)==-22);
+    assert(xreal_compare_set(3)==-22);
+    assert(xreal_compare_set(1)==0 && saved=='1' && loads==1);
     assert(xreal_compare_get(&choice)==0 && choice==1);
-    vendor_error=-9;
-    assert(xreal_compare_set(2,vendor_set)==-9 && saved=='1');
-    vendor_error=0;
     for(fault=1;fault<=5;++fault) {
-        assert(xreal_compare_set(2,vendor_set)==-5 && saved=='1');
+        assert(xreal_compare_set(2)==-5 && saved=='1');
         assert(xreal_compare_algorithm()==1 && !locks);
     }
     fault=0;
-    assert(xreal_compare_set(2,vendor_set)==0 && saved=='2');
+    assert(xreal_compare_set(2)==0 && saved=='2');
     assert(xreal_compare_get(&choice)==0 && choice==2 && !locks);
     assert(xreal_compare_get(0)==-22);
-    puts("Selection: default, two algorithms, shared Natural setting, loader once, "
+    puts("Selection: default, two algorithms, no strength setter dependency, loader once, "
          "invalid choices and five persistence failures passed.");
 }

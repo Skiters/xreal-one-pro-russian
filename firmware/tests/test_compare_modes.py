@@ -8,11 +8,11 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'firmware'))
-from compare_modes import patch_osd, patch_labels, GET_CALLS, SET_CALL, NATIVE_SET
+from compare_modes import patch_osd, patch_labels, HOOKS, DEPTH_CALLS
 from elftools.elf.elffile import ELFFile
 from unicorn import Uc, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE
 from unicorn.arm64_const import (
-    UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X19, UC_ARM64_REG_LR, UC_ARM64_REG_PC)
+    UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X19, UC_ARM64_REG_X16, UC_ARM64_REG_LR, UC_ARM64_REG_PC)
 
 
 def test():
@@ -31,7 +31,7 @@ def test():
     text = bytearray(before.get_section_by_name('.text').data())
     actual = after.get_section_by_name('.text').data()
     text_va = before.get_section_by_name('.text')['sh_addr']
-    for pc in (*GET_CALLS,SET_CALL,0xf67c0,0xf42dc,0xf432c):
+    for pc in HOOKS:
         pos = pc-text_va
         text[pos:pos+4] = actual[pos:pos+4]
     assert bytes(text) == actual
@@ -77,7 +77,7 @@ def test():
     for index,r in enumerate(relocs):
         assert r['r_info_type'] == 257 and r['r_addend'] == 0
         assert r['r_info_sym'] == count-2+index
-        assert symbols.get_symbol(r['r_info_sym']).name == ('xreal_compare_get','xreal_compare_set')[index]
+        assert symbols.get_symbol(r['r_info_sym']).name == ('xreal_ui_dispatch','xreal_compare_get')[index]
     # Every original LOAD remains byte-for-byte at the same VA, except the
     # note/code hooks and PHDR/section-header metadata required above.
     for seg in before.iter_segments():
@@ -87,7 +87,7 @@ def test():
         assert seg['p_flags'] & 3 != 3, 'No writable/executable segment'
     # Execute the real call-site BL and the new stub at two ASLR bases.
     for load_base in (0x10000000,0x70000000):
-        for pc in (*GET_CALLS,SET_CALL):
+        for pc in HOOKS:
             u = Uc(UC_ARCH_ARM64,UC_MODE_ARM)
             highest = max(s['p_vaddr']+s['p_memsz'] for s in after.iter_segments()
                           if s['p_type']=='PT_LOAD')
@@ -107,16 +107,14 @@ def test():
             u.hook_add(UC_HOOK_CODE,called,begin=target,end=target)
             u.emu_start(load_base+pc,load_base+pc+4,count=30)
             assert len(observed)==1 and observed[0][0]==0x12340000
-            if pc == SET_CALL:
-                assert observed[0][1] == load_base+NATIVE_SET
+            assert u.reg_read(UC_ARM64_REG_X16) == load_base
             assert u.reg_read(UC_ARM64_REG_X19)==0x12345678
-    rows = list(csv.reader(io.StringIO(patch_labels(labels).decode('utf-8-sig'))))
-    selected = {r[1]:r for r in rows[4:] if len(r)>17}
-    assert selected['SoftDepth'][13]=='One Pro (mesh)'
-    assert selected['BalancedDepth'][13]=='Pro+ (CPU-порт)'
-    assert selected['Mode3dEffectSetting'][4]=='Real3D algorithm'
-    print('OSD: deterministic ELF, preserved mappings/relocations, five ARM64 hooks '
-          'at two ASLR bases, two choices and RU/EN labels passed.')
+    assert patch_labels(labels)==labels, 'Depth labels must not be replaced'
+    for pc in (*DEPTH_CALLS,0xf67c0,0xf42dc,0xf432c):
+        offset=pc-text_va
+        assert actual[offset:offset+4]==before.get_section_by_name('.text').data()[offset:offset+4]
+    print('OSD: 15 rebased UI hooks, unchanged depth handlers/labels/range, '
+          'deterministic ELF, original load mappings, dynamic hash/relocations passed.')
 
 
 if __name__ == '__main__':
