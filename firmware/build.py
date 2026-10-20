@@ -22,7 +22,8 @@ BASE_SHA = '1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0'
 STOCK_SHA = 'c052575b989c9811c07563bf61ff3360c32a275bc3bb4dd426e211e94525759b'
 SOURCES = ['firmware/cpu_adapter.c', 'firmware/lut_fast.c', 'firmware/runtime.c',
            'firmware/runtime.h', 'work/3d-lab/real3d_cpu.c', 'firmware/build.py',
-           'installer/profiles.py', 'installer/package_format.py', 'installer/version.py']
+           'installer/profiles.py', 'installer/package_format.py', 'installer/version.py',
+           'firmware/onepro_warp.c', 'firmware/onepro_warp.h', 'firmware/compare_modes.py']
 
 
 def sha(data):
@@ -57,6 +58,13 @@ def build(args):
                   'libc.so.6': '/lib/libc-2.25.so'}
     for name, target in link_names.items():
         checked(args.sysroot / name, ABI_LIBRARIES[target])
+    if args.compare_onepro_warp:
+        if args.capture_real3d:
+            raise ValueError('Legacy mesh changes source planes; use its separate diagnostics.')
+        from compare_modes import checked as compare_checked, DL_SHA, MESH_SHA, patch_osd, patch_labels
+        compare_checked((args.sysroot/'libdl.so.2').read_bytes(), DL_SHA)
+        mesh = compare_checked(args.onepro_mesh.read_bytes(), MESH_SHA)
+        link_names['libdl.so.2'] = '/lib/libdl-2.25.so'
     source_hashes = {s: sha((ROOT/s).read_bytes()) for s in SOURCES}
     library = out / 'libxreal_cpu_adapter.so'
     flags = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
@@ -64,6 +72,8 @@ def build(args):
              '-I', 'firmware']
     if args.capture_real3d:
         flags.append('-DXREAL_CAPTURE_REAL3D=1')
+    if args.compare_onepro_warp:
+        flags.append('-DXREAL_COMPARE_ONEPRO_WARP=1')
     subprocess.run([str(args.clang), *flags, *[s for s in SOURCES if s.endswith('.c')],
                     '-L', str(args.sysroot.resolve()),
                     *['-l:'+n for n in link_names], '-o', str(library)],
@@ -81,9 +91,13 @@ def build(args):
         contents = {i.filename: z.read(i) for i in z.infolist()}
         attrs = {i.filename: copy.copy(i) for i in z.infolist()}
     results = {}
-    for model in ('one-pro', 'one'):
+    for model in (('one-pro',) if args.compare_onepro_warp else ('one-pro', 'one')):
         files = dict(contents)
         files['pilot/bin/libxreal_cpu_adapter.so'] = library.read_bytes()
+        if args.compare_onepro_warp:
+            files['pilot/bin/libxreal_onepro_mesh.so'] = mesh
+            files['pilot/bin/libnr_osd.so'] = patch_osd(files['pilot/bin/libnr_osd.so'])
+            files['pilot/resource/osd_language.csv'] = patch_labels(files['pilot/resource/osd_language.csv'])
         if model == 'one':
             with zipfile.ZipFile(io.BytesIO(stock)) as z:
                 for name in files:
@@ -110,6 +124,12 @@ def build(args):
                         soc=SOC, pilot=PILOT, abi_libraries=ABI_LIBRARIES,
                         mmz=[MMZ_START, MMZ_END],
                         verification='candidate; physical mode/performance tests required')
+        if args.compare_onepro_warp:
+            manifest['comparison'] = {
+                'scope': 'One Pro vendor mesh versus current Pro+ CPU port; shared Pilot 2 depth inference',
+                'onepro_mesh_sha256': MESH_SHA, 'libdl_sha256': DL_SHA,
+                'menu': 'Real3D algorithm; replaces strength selector in this test only',
+                'default': 'Pro+ CPU port', 'physical_comparison': 'pending'}
         manifest['build_id'] = sha(encode(manifest))
         files['pilot/xreal-build.json'] = encode(manifest)
         files['pilot/checksums.sha256'] = ''.join(
@@ -147,4 +167,8 @@ if __name__ == '__main__':
     p.add_argument('--output', type=Path, default=ROOT/f'outputs/v{VERSION}')
     p.add_argument('--capture-real3d', action='store_true',
                    help='Diagnostic build: save one bounded input/warped/depth PGM capture on device')
+    p.add_argument('--compare-onepro-warp', action='store_true',
+                   help='One Pro only: two mesh algorithms, shared Pilot 2 depth; test menu')
+    p.add_argument('--onepro-mesh', type=Path,
+                   default=ROOT/'work/3d-lab/vendor-compare/onepro-libnr_depth_manager.so')
     build(p.parse_args())

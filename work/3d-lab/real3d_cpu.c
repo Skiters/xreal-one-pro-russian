@@ -3,6 +3,9 @@
  * A failed ABI/layout check leaves the existing HDR path untouched.
  */
 #include "runtime.h"
+#ifdef XREAL_COMPARE_ONEPRO_WARP
+#include "onepro_warp.h"
+#endif
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
@@ -352,6 +355,13 @@ static int process_frame(const struct real3d_frame *f) {
     }
     u64 mapped_at = monotonic_us();
 
+#ifdef XREAL_COMPARE_ONEPRO_WARP
+    int legacy = xreal_compare_algorithm() == 1;
+    if (legacy) {
+        rc = xreal_onepro_warp(source, destination, src_strides, dst_strides,
+                               z, f->fractional_bits);
+    } else
+#endif
     if (!side_by_side && chroma_half && f->width == 1920 && f->height == 1080) {
         /* Four independent depth-row segments on the four Cortex-A53 cores. */
         struct segment_job jobs[4];
@@ -391,6 +401,15 @@ static int process_frame(const struct real3d_frame *f) {
         if (rc) break;
     }
     u64 warped_at = monotonic_us();
+#ifdef XREAL_COMPARE_ONEPRO_WARP
+    /* The original mesh writes the opposite view back into source planes.
+     * All workers must finish before either view is flushed or released. */
+    if (!rc && legacy) for (u32 channel = 0; channel < 3; ++channel)
+        if (ar_hal_sys_mmz_flush_cache_pa(f->src[channel], src_sizes[channel])) {
+            rc = -5;
+            break;
+        }
+#endif
     if (!rc) for (u32 channel = 0; channel < 3; ++channel)
         if (ar_hal_sys_mmz_flush_cache_pa(f->dst[channel], dst_sizes[channel])) {
             rc = -5;
@@ -455,8 +474,14 @@ int xreal_real3d_rpc(u32 core, const struct rpc *call, u32 sync) {
         if (call->length != sizeof(struct real3d_frame)) return -22;
         const struct real3d_frame *f = call->args;
         int rc = process_frame(f);
-        if (rc || frames < 3 || frames % 300 == 0)
+        if (rc || frames < 3 || frames % 300 == 0) {
+#ifdef XREAL_COMPARE_ONEPRO_WARP
+            diagnostic(xreal_compare_algorithm() == 1 ?
+                       "process-onepro-mesh" : "process-proplus-port", f, rc);
+#else
             diagnostic("process", f, rc);
+#endif
+        }
         if (rc) {
             /* A rejected descriptor may alias result with a frame plane.
              * Only a fully validated descriptor permits a status write.
