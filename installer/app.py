@@ -1,5 +1,7 @@
 """Standalone Windows GUI. Merely opening this app never starts a write."""
 import ctypes
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 import backend
+from version import VERSION
 
 
 class App:
@@ -19,7 +22,8 @@ class App:
         self.busy = False
         self.events = queue.Queue()
         self.found = []
-        root.title('XREAL One / One Pro · Русское меню · v0.6.0-test')
+        self.build = None
+        root.title(f'XREAL One / One Pro · Русское меню · v{VERSION}')
         scale = float(root.tk.call('tk', 'scaling')) / (96 / 72)
         left, top, right, bottom = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
         if sys.platform == 'win32':
@@ -152,11 +156,16 @@ class App:
         elif self.firmware is backend.EXPERIMENTAL:
             self.description.configure(text='Только для One Pro X1112010. Русское меню, AI HDR, '
                                        'режимы «Чтение» и «Кино», профиль Hebe с luminance до 500 '
-                                       'и экспериментальный Real3D с CPU-обработкой. На одном устройстве '
-                                       'глубина заметна слабо; измерено около 53–55 обработанных кадров/с. '
-                                       'Стабильные 60 кадров/с не подтверждены.')
+                                       'и экспериментальный Real3D с CPU-обработкой. '
+                                       'Плавность зависит от сборки; стабильные 60 кадров/с не подтверждены.')
         else:
             self.description.configure(text='Выберите BIN-файл подходящей версии Pilot.')
+        if self.build:
+            self.description.configure(text=self.description.cget('text') +
+                f"\nСборка {self.build.get('release', '?')} · {self.build['build_id'][:12]}. "
+                'Полный 3D LUT, согласованное смещение Y/U/V, постоянный пул потоков. '
+                'Перед записью проверяются системные библиотеки и карта видеопамяти. '
+                'Это кандидат: проверка функций на конкретной модели ещё требуется.')
         self.selected()
 
     def choose_firmware(self):
@@ -168,6 +177,7 @@ class App:
             return
         self.firmware = None
         self.firmware_path = None
+        self.build = None
         self.selected()
         self.browse_button.configure(state='disabled')
         self.file_name.set(Path(path).name)
@@ -176,8 +186,8 @@ class App:
 
     def check_firmware(self, path):
         try:
-            firmware = backend.identify_package(path)
-            self.events.put(('file_ok', path, firmware))
+            firmware, build = backend.identify_package(path, return_manifest=True)
+            self.events.put(('file_ok', path, (firmware, build)))
         except Exception as error:
             self.events.put(('file_error', str(error), 0))
 
@@ -214,14 +224,27 @@ class App:
 
     def worker(self, selected, firmware, path, verify_only=False):
         # Hold the machine awake during transmission and read-back, on this same thread.
+        report = {'version': VERSION, 'started_utc': datetime.now(timezone.utc).isoformat(),
+                  'firmware': firmware.key, 'filename': Path(path).name if path else firmware.filename,
+                  'usb_pid': selected.get('product_id'), 'operation': 'verify' if verify_only else 'update',
+                  'selected_build': self.build, 'ok': False}
+        def progress(text, percent):
+            report['last_stage'] = text
+            report['progress'] = percent
+            self.events.put(('progress', text, percent))
         try:
+            if path:
+                with Path(path).open('rb') as source:
+                    report['package_sha256'] = hashlib.file_digest(source, 'sha256').hexdigest()
             if sys.platform == 'win32':
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
             action = backend.verify_only if verify_only else backend.update
-            action(selected, lambda text, percent: self.events.put(('progress', text, percent)),
-                   firmware=firmware, path=path)
+            result = action(selected, progress, firmware=firmware, path=path)
+            report.update(result or {})
+            report['ok'] = True
             self.events.put(('done', '', 100))
         except Exception as e:
+            report['error'] = str(e)
             log = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater' / 'last-error.txt'
             try:
                 log.parent.mkdir(parents=True, exist_ok=True)
@@ -230,6 +253,14 @@ class App:
                 pass
             self.events.put(('error', str(e), 0))
         finally:
+            report['finished_utc'] = datetime.now(timezone.utc).isoformat()
+            try:
+                folder = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater'
+                folder.mkdir(parents=True, exist_ok=True)
+                name = datetime.now(timezone.utc).strftime('report-%Y%m%d-%H%M%S-%f.json')
+                (folder/name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+            except OSError:
+                pass
             if sys.platform == 'win32':
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
@@ -238,7 +269,7 @@ class App:
             while True:
                 kind, text, percent = self.events.get_nowait()
                 if kind == 'file_ok':
-                    self.firmware = percent
+                    self.firmware, self.build = percent
                     self.firmware_path = Path(text)
                     self.browse_button.configure(state='normal')
                     self.status.set('BIN проверен. Выберите очки и запустите установку.')
@@ -283,7 +314,8 @@ def main():
         candidates = ((selected_firmware.key, selected_firmware),) if chosen_path else backend.FIRMWARES.items()
         for key, firmware in candidates:
             data, expected = backend.load_package(chosen_path, firmware=firmware)
-            reports[key] = {'bytes': len(data), 'verified_files': len(expected)}
+            reports[key] = {'bytes': len(data), 'verified_files': len(expected),
+                            'package_sha256': expected.package_sha256, 'build': expected.build}
         root = tk.Tk()
         root.withdraw()
         app = App(root)
@@ -292,6 +324,7 @@ def main():
         count = len(found)
         root.destroy()
         device_identity = None
+        abi_preflight = None
         if mode in ('--check-device', '--verify-device'):
             if count != 1:
                 raise RuntimeError('Read-only check requires exactly one device')
@@ -301,12 +334,16 @@ def main():
                         sys.argv[sys.argv.index('--firmware')+1], backend.STANDARD
                     ) if '--firmware' in sys.argv else backend.STANDARD)
                 device_identity = backend.identity(probe, selected_firmware)
+                _, expected = backend.load_package(chosen_path, firmware=selected_firmware)
+                if expected.build:
+                    abi_preflight = backend.check_abi(probe, expected.build)
             if mode == '--verify-device':
                 _, expected = backend.load_package(chosen_path, firmware=selected_firmware)
                 backend.verify_selected(found[0], expected, lambda *_: None,
                                         firmware=selected_firmware)
         dest.write_text(json.dumps({'ok': True, 'firmwares': reports,
                                     'hid_devices': count, 'tk_loaded': True, 'firmware_writes': 0,
+                                    'version': VERSION, 'abi_preflight': abi_preflight,
                                     'device_identity': device_identity}), encoding='utf-8')
         return
     if sys.platform == 'win32':
@@ -324,4 +361,15 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as error:
+        mode = next((flag for flag in ('--self-test','--check-device','--verify-device')
+                     if flag in sys.argv), None)
+        if not mode:
+            raise
+        destination = Path(sys.argv[sys.argv.index(mode)+1])
+        destination.write_text(json.dumps({'ok': False, 'version': VERSION,
+                                           'error': str(error), 'firmware_writes': 0},
+                                          ensure_ascii=False, indent=2), encoding='utf-8')
+        raise SystemExit(1)

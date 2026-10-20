@@ -1,17 +1,23 @@
-# One Pro SKU compatibility
+# Совместимость моделей
 
-The Windows updater allows exactly `X1112010` and `X1112011`, with USB VID/PID `3318:0436`, interface 0, usage page `ff00`, SoC `15.1.03.603_20260914` and Pilot `1.9.1.20260914175625`. Other SKUs and firmware versions remain rejected.
+| Пакет | USB PID | SKU / профиль | Условия |
+|---|---|---|---|
+| Перевод Pilot 1.9.1 | `0438` One, `0436` One Pro | Pro `X1112010`, `X1112011` | SoC 15.1.03.603; исходная Pilot 1.9.1 или поддерживаемая 2.0 |
+| Pilot 2.0 One Pro, 0.7.0-rc1 | `0436` | `X1112010`, `one-pro-603`, Hebe/Gina | Пять хешей системных библиотек и MMZ должны совпасть |
+| Pilot 2.0 One, 0.7.0-rc1 | `0438` | `one-603`, GF; без предположения о SKU Pro | Те же строгие проверки ABI; физическая проверка One ожидается |
 
-## Evidence reviewed on 2026-10-15
+Общие параметры: VID `3318`, интерфейс 0, usage page `ff00`, SoC `15.1.03.603_20260914`. Допустимые исходные Pilot: `1.9.1.20260914175625` и `2.0.0.20260920102250`. One Pro X1112011 с уже установленной Pilot 2.0 не считается исследованным устройством и отклоняется.
 
-The official XREAL OTA JavaScript saved during this project's original investigation uses these mappings:
+Новые пакеты имеют `pilot/xreal-build.json` со схемой 2 и профилем модели. One дополнительно содержит прежнюю совместимую метку `pilot/xreal-target.json`. Метки включены во внутренние контрольные суммы. BIN One отклоняется на Pro, и наоборот; идентичность процессора не подменяет эту проверку.
 
-- `Support-oYWAiGUb.js`: USB `3318:0436` maps to `one_pro`, kernel partition; the One Pro profile uses `hardwareCode:6`.
-- `ota-CrMFRFH8.js`: `Ue()` requests the file list via `Mr(appName, hardwareCode, version)`. That request does not include the SKU read by command 204. In the inspected client, One Pro package selection is by the USB hardware profile, not by `X1112010` versus `X1112011`.
-- The reported `X1112011` device passed USB enumeration and returned the same SoC/Pilot versions as the existing supported device; only our single-SKU comparison blocked it before writing.
+## Имеющиеся доказательства
 
-This justifies extending the installer allowlist to the second observed One Pro SKU without changing the firmware payload. It does not establish physical test coverage: successful installation and visual verification have been reported for `X1112010`; physical installation on `X1112011` is still awaiting user feedback.
+20 октября на подключённом One Pro X1112010 прочитаны SoC/Pilot и пять библиотек: HAL, libc, libpthread, NPU и DSP. Хеши совпали с исследованным ABI; MMZ находится в диапазоне `0x33000000..0x3fffffff`. Для новой 0.7.0-rc1 это подтверждает только системную основу; сама новая сборка ещё требует аппаратных испытаний.
 
-Official updater: https://www.xreal.com/ota/
+Предыдущие версии пользователь проверял на One Pro: SDR, AI HDR, «Чтение», «Кино», возврат между режимами и наличие глубины Real3D. Эти результаты не доказывают работу нового адаптера и не являются тестом One. У обычного One пока нет собственного полного аппаратного протокола. Совпадение библиотек будет обязательной предварительной проверкой, но не достаточным условием объявления функций рабочими.
 
-Regression tests cover the second SKU through the simulated update/read-back flow and continue to reject unknown SKUs and wrong firmware versions before any flash command.
+Поддержка второго SKU One Pro в переводе Pilot 1.9.1 основана на исследованном OTA-клиенте: `3318:0436` выбирает `one_pro`, `hardwareCode:6`; запрос пакета не включает SKU из команды 204. На X1112011 были сообщены те же версии SoC/Pilot. Это обоснование относится к прежнему переводу и не распространяется автоматически на CPU-порт Pilot 2.0.
+
+Штатный веб-обновлятор: https://www.xreal.com/ota/
+
+Программа не переносит MCU, DSP, системные разделы или калибровки между моделями. Профиль Hebe не применяется к One. Предел `luminance` 500 не является измерением яркости и не подтверждает равенство OLED-панелей.

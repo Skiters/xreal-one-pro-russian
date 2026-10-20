@@ -5,6 +5,8 @@
 !/README.md
 !/installer/
 /installer/__pycache__/
+!/firmware/
+/firmware/**/__pycache__/
 !/work/
 !/outputs/
 /work/*

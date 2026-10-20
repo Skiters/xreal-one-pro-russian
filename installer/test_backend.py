@@ -11,12 +11,46 @@ import zlib
 
 import backend as b
 
+def elf_fixture():
+    data=bytearray(120)
+    data[:7]=b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<HH",data,16,3,183)
+    struct.pack_into("<Q",data,32,64)
+    struct.pack_into("<HH",data,54,56,1)
+    struct.pack_into("<IIQQQQQQ",data,64,1,5,0,0,0,120,120,4096)
+    return bytes(data)
+
+
 
 def archive(name, content):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w') as z:
         z.writestr(name, content)
     return stream.getvalue()
+
+
+def one_fixture():
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as z:
+        lines = []
+        for name in b.ONE_EXPERIMENTAL.files:
+            if name == 'pilot/checksums.sha256':
+                continue
+            content = elf_fixture() if name.startswith('pilot/bin/') else b'data'
+            if name.startswith('pilot/conf/'):
+                content = b'{"display": {}}'
+            if name == 'pilot/xreal-target.json':
+                content = json.dumps(b.ONE_TARGET).encode()
+            z.writestr(name, content)
+            lines.append(hashlib.sha256(content).hexdigest()+'  ./'+name[6:])
+        z.writestr('pilot/checksums.sha256', '\n'.join(lines)+'\n')
+    header = bytearray(64)
+    struct.pack_into('<II', header, 8, 0x1500, 4)
+    header[16:36] = b.PILOT_2.encode()
+    data = header + stream.getvalue().translate(bytes(i ^ 0x66 for i in range(256)))
+    data[4:8] = (len(data)-8).to_bytes(4, 'little')
+    data[:4] = b.container_crc(data).to_bytes(4, 'little')
+    return data
 
 
 class FakeProbe:
@@ -74,10 +108,12 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(probe.pilot, b.PILOT)
 
     def test_one_bin_is_identified_by_internal_target_and_not_filename(self):
-        original = b.firmware_path(b.ONE_EXPERIMENTAL)
-        self.assertIs(b.identify_package(original), b.ONE_EXPERIMENTAL)
-        with self.assertRaisesRegex(RuntimeError, 'другой модели'):
-            b.load_package(original, b.EXPERIMENTAL)
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory)/'arbitrary-name.bin'
+            original.write_bytes(one_fixture())
+            self.assertIs(b.identify_package(original), b.ONE_EXPERIMENTAL)
+            with self.assertRaisesRegex(RuntimeError, 'другой модели'):
+                b.load_package(original, b.EXPERIMENTAL)
         with self.assertRaisesRegex(RuntimeError, 'другой модели'):
             b.load_package(b.firmware_path(b.EXPERIMENTAL), b.ONE_EXPERIMENTAL)
 
@@ -89,6 +125,8 @@ class BackendTests(unittest.TestCase):
                 if name == 'pilot/checksums.sha256':
                     continue
                 content = json.dumps(dict(b.ONE_TARGET, model='other')).encode() if name.endswith('xreal-target.json') else b'data'
+                if name == 'pilot/bin/pilot' or name.endswith('.so'): content=elf_fixture()
+                if name.startswith('pilot/conf/') and name.endswith('.json'): content=b'{"display": {}}'
                 z.writestr(name, content)
                 lines.append(hashlib.sha256(content).hexdigest()+'  ./'+name[6:])
             z.writestr('pilot/checksums.sha256', '\n'.join(lines)+'\n')
@@ -161,10 +199,13 @@ class BackendTests(unittest.TestCase):
 
     def test_all_release_firmwares_validate(self):
         for firmware in b.FIRMWARES.values():
+            if not b.firmware_path(firmware).exists():
+                continue  # Optional published packages are not source-test dependencies.
             with self.subTest(firmware=firmware.key):
                 data, expected = b.load_package(firmware=firmware)
                 self.assertGreater(len(data), 80_000_000)
-                self.assertEqual(set(expected), set(firmware.files))
+                self.assertTrue(set(firmware.files) <= set(expected))
+                self.assertIn("pilot/resource/osd_language.csv", expected)
 
     def test_full_flow_chunks_finish_readback(self):
         probe = FakeProbe()
@@ -254,7 +295,8 @@ class BackendTests(unittest.TestCase):
             for name in b.EXPERIMENTAL.files:
                 if name == 'pilot/checksums.sha256':
                     continue
-                content = name.encode()
+                content = elf_fixture() if name == 'pilot/bin/pilot' or name.endswith('.so') else name.encode()
+                if name.startswith('pilot/conf/') and name.endswith('.json'): content=b'{"display": {}}'
                 archive_file.writestr(name, content)
                 lines.append(f'{hashlib.sha256(content).hexdigest()}  ./'+name.removeprefix('pilot/'))
             archive_file.writestr('pilot/checksums.sha256', '\n'.join(lines)+'\n')

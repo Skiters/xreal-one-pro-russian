@@ -8,6 +8,9 @@ import sys
 import time
 import zipfile
 
+from package_format import container_crc, read_container, bounded_zip, MAX_CONTAINER, MAX_FILE
+from profiles import validate_build, check_abi
+
 import hid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'work'))
@@ -52,21 +55,6 @@ ONE_EXPERIMENTAL = Firmware(
     EXPERIMENTAL.files + ('pilot/conf/pilot_default_config_gf.json', 'pilot/xreal-target.json'))
 FIRMWARES = {firmware.key: firmware for firmware in (STANDARD, EXPERIMENTAL, ONE_EXPERIMENTAL)}
 ACCEPTED_PILOT = frozenset({'1.9.1.20260914175625', PILOT_2})
-
-
-def container_crc(data):
-    """CRC used by XREAL's type-4 Pilot container, excluding its first 8 bytes."""
-    polynomial = 0xf4acfb13
-    table = []
-    for index in range(256):
-        value = index << 24
-        for _ in range(8):
-            value = ((value << 1) ^ (polynomial if value & 0x80000000 else 0)) & 0xffffffff
-        table.append(value)
-    value = 0
-    for byte in memoryview(data)[8:]:
-        value = ((value << 8) ^ table[((value >> 24) ^ byte) & 0xff]) & 0xffffffff
-    return value
 
 
 def devices():
@@ -134,43 +122,22 @@ def firmware_path(firmware=STANDARD):
 
 
 def load_package(path=None, firmware=STANDARD):
-    data = Path(path or firmware_path(firmware)).read_bytes()
-    if (len(data) < 64 or
-            int.from_bytes(data[4:8], 'little') != len(data)-8 or
-            int.from_bytes(data[8:12], 'little') != 0x1500 or
-            int.from_bytes(data[12:16], 'little') != 4 or
-            data[16:36] != firmware.pilot.encode()):
-        raise RuntimeError('Неверный заголовок прошивки.')
-    if container_crc(data) != int.from_bytes(data[:4], 'little'):
-        raise RuntimeError('Неверная контрольная сумма контейнера BIN.')
     try:
-        with zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(x ^ firmware.xor_key for x in range(256))))) as z:
-            names = z.namelist()
-            if len(names) != len(set(names)) or z.testzip() is not None:
-                raise RuntimeError('Архив прошивки повреждён.')
-            lines = z.read('pilot/checksums.sha256').decode('ascii').splitlines()
-            checked_names = set()
-            for line in lines:
-                digest, relative = line.split(None, 1)
-                name = 'pilot/' + relative.removeprefix('./')
-                if (len(digest) != 64 or name in checked_names or
-                        hashlib.sha256(z.read(name)).hexdigest() != digest):
-                    raise RuntimeError('Внутренняя контрольная сумма BIN не совпадает: '+name)
-                checked_names.add(name)
-            actual_files = {name for name in names if not name.endswith('/')}
-            if checked_names != actual_files - {'pilot/checksums.sha256'}:
-                raise RuntimeError('Не все файлы BIN перечислены в checksums.sha256.')
-            target = json.loads(z.read('pilot/xreal-target.json')) if 'pilot/xreal-target.json' in names else None
-            if ((firmware is ONE_EXPERIMENTAL and target != ONE_TARGET) or
-                    (firmware is not ONE_EXPERIMENTAL and target is not None)):
-                raise RuntimeError('BIN предназначен для другой модели очков.')
-            expected = {name: hashlib.sha256(z.read(name)).hexdigest() for name in firmware.files}
+        data, expected, target = read_container(path or firmware_path(firmware),
+                                                firmware.pilot, firmware.xor_key)
+        if ((firmware is ONE_EXPERIMENTAL and target != ONE_TARGET) or
+                (firmware is not ONE_EXPERIMENTAL and target is not None)):
+            raise RuntimeError('BIN предназначен для другой модели очков.')
+        if not set(firmware.files) <= expected.keys():
+            raise ValueError('Нет обязательных файлов прошивки.')
+        validate_build(expected.build, firmware.key, firmware.pilot)
     except (zipfile.BadZipFile, KeyError, UnicodeError, ValueError) as error:
-        raise RuntimeError('Архив BIN повреждён или содержит неподдерживаемые файлы.') from error
+        raise RuntimeError('Архив BIN не прошёл проверку: '+str(error)) from error
     return data, expected
 
-
-def identify_package(path):
+def identify_package(path, return_manifest=False):
+    if Path(path).stat().st_size > MAX_CONTAINER:
+        raise RuntimeError('BIN превышает допустимый размер.')
     with Path(path).open('rb') as stream:
         header = stream.read(64)
     firmware = next((item for item in FIRMWARES.values()
@@ -181,12 +148,13 @@ def identify_package(path):
         try:
             data = Path(path).read_bytes()
             with zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(x ^ 0x66 for x in range(256))))) as archive:
+                bounded_zip(archive)
                 if 'pilot/xreal-target.json' in archive.namelist():
                     firmware = ONE_EXPERIMENTAL
-        except zipfile.BadZipFile as error:
+        except (zipfile.BadZipFile, ValueError) as error:
             raise RuntimeError('Архив BIN повреждён.') from error
-    load_package(path, firmware)
-    return firmware
+    _, expected = load_package(path, firmware)
+    return (firmware, expected.build) if return_manifest else firmware
 
 
 def transmit(probe, data, emit):
@@ -207,12 +175,13 @@ def verify_files(probe, expected, emit):
     for index, (name, digest) in enumerate(expected.items()):
         emit(f'Проверка установленных файлов: {index+1} из {len(expected)}',
              90+index*9/max(1, len(expected)-1))
-        result = probe.export('/usrdata/'+name, max_bytes=64*1024*1024)
+        result = probe.export('/usrdata/'+name, max_bytes=MAX_FILE)
         if result['start_status'] != 0 or result.get('finish_status') != 0:
             raise RuntimeError('Не удалось прочитать установленный файл: '+name)
         with zipfile.ZipFile(io.BytesIO(result['data'])) as z:
-            matches = [n for n in z.namelist() if n.rsplit('/', 1)[-1] == name.rsplit('/', 1)[-1]]
-            if len(matches) != 1 or hashlib.sha256(z.read(matches[0])).hexdigest() != digest:
+            matches = [i for i in z.infolist() if not i.is_dir() and i.filename.rsplit('/', 1)[-1] == name.rsplit('/', 1)[-1]]
+            if (len(matches) != 1 or matches[0].file_size > MAX_FILE or
+                    hashlib.sha256(z.read(matches[0])).hexdigest() != digest):
                 raise RuntimeError('Проверка установленного файла не пройдена: '+name)
 
 
@@ -240,6 +209,8 @@ def verify_only(selected, emit, firmware=STANDARD, path=None):
     _, expected = load_package(path, firmware=firmware)
     verify_selected(selected, expected, emit, firmware=firmware)
     emit('Готово. Все проверяемые файлы совпадают с прошивкой. Можно отключить очки.', 100)
+    return {'operation': 'verify', 'package_sha256': expected.package_sha256,
+            'build': expected.build, 'verified_files': dict(expected), 'firmware_writes': 0}
 
 
 def update(selected, emit, probe_factory=SelectedProbe, package_loader=None, sleep=time.sleep,
@@ -248,7 +219,10 @@ def update(selected, emit, probe_factory=SelectedProbe, package_loader=None, sle
     data, expected = (package_loader or (lambda: load_package(path, firmware=firmware)))()
     with probe_factory(selected) as probe:
         emit('Проверка модели и версии очков…', 0)
-        identity(probe, firmware)
+        before = identity(probe, firmware)
+        abi = None
+        if getattr(expected, 'build', None):
+            abi = check_abi(probe, expected.build, emit)
         emit('Начинается запись. Не отключайте очки.', 1)
         transmit(probe, data, emit)
     emit('Ожидание перезапуска очков…', 89)
@@ -274,3 +248,7 @@ def update(selected, emit, probe_factory=SelectedProbe, package_loader=None, sle
                            'Переподключите очки и нажмите «Проверить без записи». '
                            'Повторная прошивка пока не нужна. Причина: '+str(e)) from e
     emit('Готово. Файлы проверены. Можно отключить очки и проверить русское меню.', 100)
+    return {'operation': 'update', 'before': before, 'after': actual,
+            'package_sha256': getattr(expected, 'package_sha256', None),
+            'build': getattr(expected, 'build', None), 'abi_preflight': abi,
+            'verified_files': dict(expected)}
