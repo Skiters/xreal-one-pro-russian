@@ -3,7 +3,7 @@ from arm64_helper import (Uc, UC_ARCH_ARM64, UC_MODE_ARM, BASE, SRC, STACK, STOP
                           elf, symbols, UC_ARM64_REG_X0, UC_ARM64_REG_SP,
                           UC_ARM64_REG_LR)
 
-# One captured descriptor from the previously working physical One Pro.
+# One captured descriptor from the physical One Pro.
 base=[1920,1080,2048,1024,1920,1024,480,2,
       0x39244000,0x39462000,0x394eb000,
       0x3cd50000,0x3cf4a400,0x3cfd1400,0x3d66b000,0x3ca13000]
@@ -28,7 +28,14 @@ def validate(values):
 
 
 assert validate(base)==0
+for bits in (3,4):
+    changed=list(base);changed[7]=bits
+    assert validate(changed)==0
 cases=0
+for bits in (1,5,0xffffffff):
+    changed=list(base);changed[7]=bits
+    assert validate(changed)==-22
+    cases+=1
 for i in range(8):
     changed=list(base);changed[i]=0
     assert validate(changed)==-22

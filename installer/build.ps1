@@ -1,4 +1,4 @@
-param([string]$FirmwareDirectory = 'outputs/v0.7.0-rc1')
+param([string]$FirmwareDirectory = '')
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot)
 $python = Join-Path (Get-Location) 'work/installer-venv/Scripts/python.exe'
@@ -12,6 +12,7 @@ if ($LASTEXITCODE) { throw 'Dependency installation failed' }
 if ($LASTEXITCODE) { throw 'Tests failed' }
 $version = & $python -c "import sys;sys.path.insert(0,'installer');from version import VERSION;print(VERSION)"
 if ($LASTEXITCODE) { throw 'Version resolution failed' }
+if (-not $FirmwareDirectory) { $FirmwareDirectory = "outputs/v$version" }
 $destination = Join-Path (Get-Location) "outputs/release-$version"
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 $bins = @('one-pro','one') | ForEach-Object { Join-Path $FirmwareDirectory "XREAL-$_-Pilot2-RU-$version.bin" }

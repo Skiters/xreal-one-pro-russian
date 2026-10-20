@@ -37,6 +37,11 @@ Device logs while the DP input was 1920x1080 at approximately 60 Hz showed:
 | Two luma workers, chroma on caller | ~48 | ~72 ms |
 | Four equal YUV420 depth-row segments | ~53-55 | ~65 ms |
 
+Correction, 2026-10-20: the user clarified that actual stereo depth was not
+visible in these earlier builds either. The earlier subjective reports below
+do not establish stereo output. See `firmware/REAL3D-INVESTIGATION.md` for the
+recovered fractional-displacement contract and remaining eye-routing checks.
+
 The active monocular-depth graph uses the **heavy** NPU model
 `gina_ar9481npu_depth_heavy` (`depth_model_type:2`). The depth map is 480x270;
 observed values after warm-up ranged about 1-157. The four-segment CPU warp

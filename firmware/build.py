@@ -62,6 +62,8 @@ def build(args):
     flags = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
              '-fuse-ld=lld', '-Wall', '-Wextra', '-Werror', '-Wl,--no-undefined', '-Wl,-soname,libxreal_cpu_adapter.so',
              '-I', 'firmware']
+    if args.capture_real3d:
+        flags.append('-DXREAL_CAPTURE_REAL3D=1')
     subprocess.run([str(args.clang), *flags, *[s for s in SOURCES if s.endswith('.c')],
                     '-L', str(args.sysroot.resolve()),
                     *['-l:'+n for n in link_names], '-o', str(library)],
@@ -142,5 +144,7 @@ if __name__ == '__main__':
                    help='Directory containing the three hash-pinned target ELF libraries')
     p.add_argument('--stock', type=Path, required=True, help='Original vendor Pilot 2 ZIP')
     p.add_argument('--base', type=Path, default=ROOT/'outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin')
-    p.add_argument('--output', type=Path, default=ROOT/'outputs/v0.7.0-rc1')
+    p.add_argument('--output', type=Path, default=ROOT/f'outputs/v{VERSION}')
+    p.add_argument('--capture-real3d', action='store_true',
+                   help='Diagnostic build: save one bounded input/warped/depth PGM capture on device')
     build(p.parse_args())

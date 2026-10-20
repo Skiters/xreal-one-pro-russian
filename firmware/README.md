@@ -75,7 +75,7 @@ python firmware/tests/test_frame_bounds.py
 ```
 
 `REAL3D_LIB` may point to another newly built adapter. The default is
-`outputs/v0.7.0-rc1/libxreal_cpu_adapter.so`. The tests execute the ARM64
+`outputs/v<VERSION>/libxreal_cpu_adapter.so` using `installer/version.py`. The tests execute the ARM64
 functions in Unicorn and compare them to an independent displacement oracle.
 
 Native Linux/WSL tests of numerical accuracy and worker lifetime:
