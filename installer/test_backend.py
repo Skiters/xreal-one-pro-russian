@@ -176,11 +176,15 @@ class BackendTests(unittest.TestCase):
             self.run_update(probe, b.EXPERIMENTAL, product_id=0x0438)
         self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
 
-    def test_experimental_only_allows_verified_sku(self):
-        probe = FakeProbe(sku='X1112010', target_pilot=b.PILOT_2)
-        self.run_update(probe, b.EXPERIMENTAL)
-        self.assertEqual(probe.pilot, b.PILOT_2)
-        for sku in ('X1112011', 'X1112012'):
+    def test_experimental_allows_both_one_pro_skus(self):
+        for sku in ('X1112010', 'X1112011'):
+            for pilot in (b.PILOT, b.PILOT_2):
+                with self.subTest(sku=sku, pilot=pilot):
+                    probe = FakeProbe(sku=sku, pilot=pilot, target_pilot=b.PILOT_2)
+                    _, events = self.run_update(probe, b.EXPERIMENTAL)
+                    self.assertEqual(probe.pilot, b.PILOT_2)
+                    self.assertEqual(events[-1][1], 100)
+        for sku in ('X1112012', 'UNKNOWN'):
             probe = FakeProbe(sku=sku, target_pilot=b.PILOT_2)
             with self.assertRaises(RuntimeError):
                 self.run_update(probe, b.EXPERIMENTAL)
@@ -191,11 +195,21 @@ class BackendTests(unittest.TestCase):
         self.run_update(probe, b.STANDARD)
         self.assertEqual(probe.pilot, b.PILOT)
 
-    def test_unknown_pilot2_second_sku_is_rejected(self):
+    def test_standard_can_replace_experimental_on_second_sku(self):
         probe = FakeProbe(sku='X1112011', pilot=b.PILOT_2, target_pilot=b.PILOT)
-        with self.assertRaises(RuntimeError):
-            self.run_update(probe, b.STANDARD)
-        self.assertFalse(any(cmd in (4628, 4629, 4630) for cmd, _ in probe.calls))
+        _, events = self.run_update(probe, b.STANDARD)
+        self.assertEqual(probe.pilot, b.PILOT)
+        self.assertEqual(events[-1][1], 100)
+
+    def test_second_sku_experimental_keeps_version_and_model_guards(self):
+        for pid, overrides in ((0x0436, {'soc': 'wrong'}),
+                               (0x0436, {'pilot': 'wrong'}),
+                               (0x0438, {}), (0x043e, {}), (0xffff, {})):
+            with self.subTest(pid=pid, overrides=overrides):
+                probe = FakeProbe(sku='X1112011', target_pilot=b.PILOT_2, **overrides)
+                with self.assertRaises(RuntimeError):
+                    self.run_update(probe, b.EXPERIMENTAL, product_id=pid)
+                self.assertFalse(any(c in (4628, 4629, 4630) for c, _ in probe.calls))
 
     def test_all_release_firmwares_validate(self):
         for firmware in b.FIRMWARES.values():

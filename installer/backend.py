@@ -42,7 +42,7 @@ STANDARD = Firmware('standard', 'XREAL-One-RU-Pilot1.9.1.bin', FIRMWARE_SHA, PIL
 EXPERIMENTAL = Firmware(
     'experimental', 'XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin',
     '1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0',
-    PILOT_2, 0x66, frozenset({'X1112010'}),
+    PILOT_2, 0x66, SUPPORTED_SKUS,
     ('pilot/bin/pilot', 'pilot/bin/libnr_image_post_processor.so',
      'pilot/bin/libxreal_cpu_adapter.so', 'pilot/bin/libnr_osd.so',
      'pilot/conf/pilot_default_config.json', 'pilot/conf/pilot_default_config_gina.json',
@@ -103,7 +103,8 @@ def identity(probe, firmware=STANDARD):
     one = pid == 0x0438
     supported_current = (actual[1] in ACCEPTED_PILOT and
                          (pid != 0x043e or actual[1] == PILOT) and
-                         (actual[1] != PILOT_2 or one or actual[2] == 'X1112010'))
+                         (actual[1] != PILOT_2 or one or
+                          (pid == 0x0436 and actual[2] in SUPPORTED_SKUS)))
     supported_model = ((pid == 0x043e and firmware is ONE_S_STANDARD) or (one and firmware in (STANDARD, ONE_EXPERIMENTAL)) or
                        (pid == 0x0436 and firmware is not ONE_EXPERIMENTAL and actual[2] in firmware.skus))
     if actual[0] != SOC or not supported_current or not supported_model:

@@ -239,7 +239,7 @@ class App:
                                        'На обычном One работа этих функций ещё не проверена; '
                                        'плавность и глубина требуют проверки владельцем.')
         elif self.firmware is backend.EXPERIMENTAL:
-            self.description.configure(text='Только для One Pro X1112010. Русское меню, AI HDR, '
+            self.description.configure(text='Для One Pro X1112010 / X1112011. На X1112011 пока не проверено. Русское меню, AI HDR, '
                                        'режимы «Чтение» и «Кино», профиль Hebe с luminance до 500 '
                                        'и экспериментальный Real3D с CPU-обработкой. '
                                        'Плавность зависит от сборки; стабильные 60 кадров/с не подтверждены.')

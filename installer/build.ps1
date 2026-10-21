@@ -1,4 +1,4 @@
-param([string]$FirmwareDirectory = '')
+param([string]$FirmwareDirectory = '', [string]$FirmwareVersion = '')
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot)
 $python = Join-Path (Get-Location) 'work/installer-venv/Scripts/python.exe'
@@ -12,10 +12,11 @@ if ($LASTEXITCODE) { throw 'Dependency installation failed' }
 if ($LASTEXITCODE) { throw 'Tests failed' }
 $version = & $python -c "import sys;sys.path.insert(0,'installer');from version import VERSION;print(VERSION)"
 if ($LASTEXITCODE) { throw 'Version resolution failed' }
-if (-not $FirmwareDirectory) { $FirmwareDirectory = "outputs/v$version" }
+if (-not $FirmwareVersion) { $FirmwareVersion = $version }
+if (-not $FirmwareDirectory) { $FirmwareDirectory = "outputs/v$FirmwareVersion" }
 $destination = Join-Path (Get-Location) "outputs/release-$version"
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
-$bins = @('one-pro','one') | ForEach-Object { Join-Path $FirmwareDirectory "XREAL-$_-Pilot2-RU-$version.bin" }
+$bins = @('one-pro','one') | ForEach-Object { Join-Path $FirmwareDirectory "XREAL-$_-Pilot2-RU-$FirmwareVersion.bin" }
 $bins += Join-Path $FirmwareDirectory 'XREAL-1S-RU-Pilot1.9.1.bin'
 foreach ($bin in $bins) {
     if (-not (Test-Path -LiteralPath $bin)) { throw "Build firmware first: $bin" }

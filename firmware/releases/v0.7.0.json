@@ -17,15 +17,15 @@
     "readback_files": 65,
     "validation": "Only four language resources changed plus metadata/checksums; hardware test pending"
   },
-  "XREAL-Russian-Updater-0.7.0.exe": {
-    "sha256": "ec91075526375d651b10c24f303bd66bd7196677430ebccaa6b220773851b302",
-    "bytes": 11782271,
-    "validation": "46 suite tests plus libdl guard test; packaged EXE self-test with all three BINs passed, firmware_writes=0"
-  },
   "XREAL-One-OnePro-RU-Pilot1.9.1.bin": {
     "sha256": "258ecdb3a9892c7a2bf700c4f0fbccf52ced8915081c0109beb08c59c60418ec",
     "bytes": 88321128,
     "readback_files": 64,
     "validation": "Approved translation-only payload, unchanged; model/version checks retained"
+  },
+  "XREAL-Russian-Updater-0.7.1.exe": {
+    "sha256": "38a40b1d376d0a2bc9a68bcb25a251fe90ec881a652e8aeb3dd8cc56312fc1c4",
+    "bytes": 11780994,
+    "validation": "48 tests passed; One Pro X1112011 allowed experimentally with unchanged SoC/Pilot/PID and ABI/MMZ guards. Firmware BINs unchanged; physical X1112011 validation pending. Packaged EXE self-tests passed with all four published BINs; firmware_writes=0."
   }
 }

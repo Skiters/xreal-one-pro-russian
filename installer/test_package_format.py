@@ -95,13 +95,15 @@ class PackageTests(unittest.TestCase):
 
     def test_abi_mismatch_never_writes(self):
         expected=pf.VerifiedFiles({},build={'profile':'one-pro-603'})
-        probe=FakeProbe(pilot=backend.PILOT_2)
-        with self.assertRaisesRegex(RuntimeError,'библиотека отличается'):
-            backend.update({'path':b'test'},lambda *_:None,
-                           probe_factory=lambda _:probe,
-                           package_loader=lambda:(bytes(64),expected),
-                           firmware=backend.EXPERIMENTAL,sleep=lambda _:None)
-        self.assertFalse(any(c in (4628,4629,4630) for c,_ in probe.calls))
+        for sku in ('X1112010', 'X1112011'):
+            with self.subTest(sku=sku):
+                probe=FakeProbe(sku=sku, pilot=backend.PILOT_2)
+                with self.assertRaisesRegex(RuntimeError,'библиотека отличается'):
+                    backend.update({'path':b'test'},lambda *_:None,
+                                   probe_factory=lambda _:probe,
+                                   package_loader=lambda:(bytes(64),expected),
+                                   firmware=backend.EXPERIMENTAL,sleep=lambda _:None)
+                self.assertFalse(any(c in (4628,4629,4630) for c,_ in probe.calls))
 
     def test_all_files_including_resources_read_back(self):
         probe=FakeProbe()
