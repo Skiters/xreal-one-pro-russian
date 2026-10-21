@@ -24,7 +24,7 @@ SOURCES = ['firmware/cpu_adapter.c', 'firmware/lut_fast.c', 'firmware/runtime.c'
            'firmware/runtime.h', 'work/3d-lab/real3d_cpu.c', 'firmware/build.py',
            'installer/profiles.py', 'installer/package_format.py', 'installer/version.py',
            'firmware/compare_ui.c', 'firmware/ui_dispatch.S', 'firmware/generate_compare_ui.py',
-           'firmware/onepro_warp.c', 'firmware/onepro_warp.h', 'firmware/compare_modes.py']
+           'firmware/ui_fast.py', 'firmware/onepro_warp.c', 'firmware/onepro_warp.h', 'firmware/compare_modes.py']
 
 
 def sha(data):
@@ -82,6 +82,8 @@ def build(args):
         flags.append('-DXREAL_CAPTURE_REAL3D=1')
     if args.compare_onepro_warp:
         flags.append('-DXREAL_COMPARE_ONEPRO_WARP=1')
+    if getattr(args, 'ui_fast', False):
+        flags.append('-DXREAL_UI_FAST=1')
     subprocess.run([str(args.clang), *flags, *[s for s in SOURCES if s.endswith(('.c', '.S'))], *generated,
                     '-L', str(args.sysroot.resolve()),
                     *['-l:'+n for n in link_names], '-o', str(library)],
@@ -126,6 +128,10 @@ def build(args):
             files['pilot/xreal-target.json'] = encode({
                 'schema': 1, 'model': 'one', 'usb_pid': 0x0438,
                 'soc': SOC, 'experimental': True})
+        ui_fast = None
+        if getattr(args, 'ui_fast', False):
+            from ui_fast import apply
+            ui_fast = apply(files, model)
         general = config(files['pilot/conf/pilot_default_config.json'])
         assert general['state_machine']['space_screen']['frame_rate_boost_enable'] is False
         assert general['state_machine']['space_screen']['over_clocking_mode'] == 0
@@ -140,6 +146,8 @@ def build(args):
                 'onepro_mesh_sha256': MESH_SHA, 'libdl_sha256': DL_SHA,
                 'menu': 'Two Real3D mode entries; independent native four-level strength',
                 'default': 'Pro+ CPU port', 'physical_comparison': 'pending'}
+        if ui_fast:
+            manifest['ui_fast'] = ui_fast
         manifest['build_id'] = sha(encode(manifest))
         files['pilot/xreal-build.json'] = encode(manifest)
         files['pilot/checksums.sha256'] = ''.join(
@@ -157,7 +165,8 @@ def build(args):
         packed = bytearray(base[:64] + stream.getvalue().translate(bytes(i ^ 0x66 for i in range(256))))
         packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
         packed[:4] = container_crc(packed).to_bytes(4, 'little')
-        name = f'XREAL-{model}-Pilot2-RU-{VERSION}.bin'
+        suffix = '-UI-FAST-LOCAL' if ui_fast else ''
+        name = f'XREAL-{model}-Pilot2-RU-{VERSION}{suffix}.bin'
         (out/name).write_bytes(packed)
         _, verified, _ = read_container(out/name, PILOT, 0x66)
         results[name] = {'sha256': sha(packed), 'bytes': len(packed),
@@ -178,6 +187,8 @@ if __name__ == '__main__':
     p.add_argument('--model', choices=('one', 'one-pro'))
     p.add_argument('--capture-real3d', action='store_true',
                    help='Diagnostic build: save one bounded input/warped/depth PGM capture on device')
+    p.add_argument('--ui-fast', action='store_true',
+                   help='Local test: cache unchanged comparison layout and sample HDR timings every 1800 frames')
     p.add_argument('--compare-onepro-warp', action='store_true',
                    help='One Pro only: two mesh algorithms, shared Pilot 2 depth; test menu')
     p.add_argument('--onepro-mesh', type=Path,

@@ -156,7 +156,13 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(rc)break;
     }
     clock_gettime(1,&flushed);
-    if(frame_count%30==0) {
+    if(frame_count%
+#ifdef XREAL_UI_FAST
+       1800
+#else
+       30
+#endif
+       ==0) {
         long convert_us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
         long flush_us=(flushed.sec-converted.sec)*1000000+(flushed.nsec-converted.nsec)/1000;
         trace("convert microseconds",a->planes[0],a->width,convert_us);

@@ -53,11 +53,34 @@ static void make_item(U source) {
     invoke(0x28eb08,widgets[0x308/8],translated,0,0);
     item_ready=1;
 }
-static void layout(U list) {
+#ifdef XREAL_UI_FAST
+static U layout_list, layout_begin, layout_end, layout_widgets[5][5];
+static unsigned layout_modes[5], layout_available[5];
+#endif
+static void layout(U list, int force) {
     U begin=pointer(list,0x10), end=pointer(list,0x18);
     /* Native navigation excludes unavailable/hidden modes (for example SBS
      * for some inputs). Real3D rows must remain separate in that case too. */
     if (end<begin || end-begin>5*0x120 || (end-begin)%0x120) return;
+#ifdef XREAL_UI_FAST
+    const U offsets[5]={0,0x10,0x18,0x20,0x38};
+    int same=!force && list==layout_list && begin==layout_begin && end==layout_end;
+    unsigned count=0;
+    for (U it=begin;it<end;it+=0x120,++count) {
+        for (unsigned j=0;j<5;++j) {
+            U value=pointer(it,offsets[j]);
+            if (layout_widgets[count][j]!=value) same=0;
+            layout_widgets[count][j]=value;
+        }
+        unsigned available=*(B *)(it+0xd3);
+        if (layout_modes[count]!=mode(it) || layout_available[count]!=available) same=0;
+        layout_modes[count]=mode(it); layout_available[count]=available;
+    }
+    if (same) return;
+    layout_list=list; layout_begin=begin; layout_end=end;
+#else
+    (void)force;
+#endif
     unsigned index=0;
     for (U it=begin;it<end;it+=0x120,++index) {
         U box=pointer(it,0x38);
@@ -91,7 +114,7 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
         r[0]=invoke(0x10c338,list,item,0,0);
         if (mode(item)==3 && item_ready)
             invoke(0x10c338,list,(U)extra,0,0);
-        layout(list);
+        layout(list,1);
     } else if (site==0xf9bc0) {
         U *old=(U *)r[1], entries[5], n=0;
         if (item_ready && old[1]-old[0]==4*8) {
@@ -112,7 +135,7 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
                 /* Registration reparents rows and restores cached coordinates.
                  * The clone initially has the same y as the original. Apply
                  * the five-row layout AFTER this native repositioning. */
-                layout(osd+0x238bf50);
+                layout(osd+0x238bf50,1);
                 return;
             }
         }
@@ -127,7 +150,7 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
         if (item_ready && list==osd+0x238bf50 && r[1]==3)
             r[1]=xreal_compare_algorithm()==1 ? 3 : 4;
         r[0]=invoke(0x10a5f8,r[0],r[1],r[2],r[3]);
-        if (item_ready && list==osd+0x238bf50) layout(list);
+        if (item_ready && list==osd+0x238bf50) layout(list,0);
     }
 }
 #endif

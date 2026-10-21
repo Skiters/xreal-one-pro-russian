@@ -170,6 +170,19 @@ def test(path):
     assert rectangles==[(0,i*76,760,72) for i in range(5)],rectangles
     assert all(y+h<=410 for x,y,w,h in rectangles), 'Rows must fit native viewport'
     assert all(rectangles[i][1]+rectangles[i][3]<=rectangles[i+1][1] for i in range(4))
+    if 'layout_list' in symbols:
+        def geometry_calls():
+            return sum(call[0] in (0x263880,0x263a30) for call in trace)
+        before=geometry_calls()
+        run(O+0xf49a4,[listp,3],stop=O+0xf49a8)
+        assert geometry_calls()==before, 'Unchanged highlight must not relayout'
+        u.mem_write(vec+0xd3,b'\x01')
+        run(O+0xf49a4,[listp,3],stop=O+0xf49a8)
+        assert geometry_calls()>before, 'Availability change must invalidate layout'
+        before=geometry_calls()
+        run(O+0xf9bc0,[D+0x7000,vector,D+0x7100,D+0x7200],stop=O+0xf9bc4)
+        assert geometry_calls()>before, 'Native registration must force layout'
+        assert [positions[readq(p+0x38)] for p in registered]==[(0,i*76) for i in range(5)]
     # Native navigation omits hidden SBS modes on some inputs. rc6's exact
     # five-entry guard skipped layout for this valid three-item list.
     writeq(listp+24,vec+3*0x120)
