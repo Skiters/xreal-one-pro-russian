@@ -60,8 +60,11 @@ def test(path):
     ui=D+0x1000; listp=O+0x238bf50; vec=D+0x10000
     writeq(listp+16,vec);writeq(listp+24,vec)
     writeq(ui+0x268,D+0x800)
+    tabview=D+0x900;writeq(ui+0x270,tabview)
+    u.mem_write(tabview+0x48,struct.pack('<H',4))
     count=0; selected=2; depth=4; active=0; registered=[]; trace=[]; native_open=[]
-    positions={}; sizes={}
+    positions={}; sizes={}; flags={}; long_modes={}; registration_snapshots=[]
+    native_registration=False
     def ret(value=0):
         u.reg_write(UC_ARM64_REG_X0,value)
         u.reg_write(UC_ARM64_REG_PC,u.reg_read(UC_ARM64_REG_LR))
@@ -72,6 +75,7 @@ def test(path):
     calls.discard(0x200)
     calls |= {0x26e2a8,0xadb48,0xf3070,0xb4900,0x10c338,0x10cc28,0x262008,0x261ee8,
               0x10a5f8,0xf5b20}
+    calls |= {0x27b688,0x24490,0x24440,0x24630,0x23e10,0x26ffd0,0x264000,0x264130,0x26f8f8,0x2673d8,0xa2908,0x87450}
     def hook(uc,address,size,_):
         nonlocal count,selected,active,registered
         args=[uc.reg_read(r) for r in regs[:4]]
@@ -84,6 +88,19 @@ def test(path):
             name=next(n for n,p in imports.items() if p==address)
             assert name=='memcpy', name
             uc.mem_write(a,bytes(uc.mem_read(b,c)));ret(a);return
+        if offset==0x10cc28 and native_registration:return
+        if offset==0x24490:ret(alloc(bytes(a)));return
+        if offset==0x24440:ret();return
+        if offset in (0x24630,0x23e10):
+            uc.mem_write(a,bytes(uc.mem_read(b,c)));ret(a);return
+        if offset==0x26ffd0:ret(D+0x800);return
+        if offset in (0x264000,0x264130):ret(positions[a][offset==0x264130]);return
+        if offset==0x87450:raise AssertionError('Native registration rejected a row')
+        if offset==0x27b688:
+            assert a==tabview and text(b)==b'        '
+            count_tabs=struct.unpack('<H',uc.mem_read(a+0x48,2))[0]
+            uc.mem_write(a+0x48,struct.pack('<H',count_tabs+1))
+            ret(D+0xb00);return
         trace.append((offset,args))
         if offset in (0x261db0,0x28db28,0x28c8b0):
             count+=1;ret(D+0x20000+count*256);return
@@ -99,17 +116,22 @@ def test(path):
         elif offset==0x10cc28:
             begin,end=readq(b),readq(b+8)
             registered=[readq(p) for p in range(begin,end,8)]
-            # Native registration (10d074..10d07c) restores cached row
-            # coordinates. The cloned row inherits the Real3D row's y=94.
-            # rc5's pre-registration layout was therefore insufficient.
-            for item,y in zip(registered,(0,94,94,188,282)):
-                positions[readq(item+0x38)]=(0,y)
+            # Native 10cf50..10cf6c snapshots the source positions, then
+            # 10d074..10d07c restores them and rebuilds the visible list.
+            registration_snapshots.append([positions[readq(item+0x38)] for item in registered])
+            visible=[item for item in registered if not flags.get(readq(item+0x38),0)&1]
+            for idx,item in enumerate(visible):
+                uc.mem_write(vec+idx*0x120,bytes(uc.mem_read(item,0x120)))
+            writeq(listp+24,vec+len(visible)*0x120)
         elif offset==0x263880:positions[a]=(b,c)
         elif offset==0x263a30:sizes[a]=(b,c)
         elif offset==0x10a5f8:active=b
         elif offset==0xf5b20:
             assert readi(a)==3;native_open.append(selected)
-        elif offset==0x262008:ret(0);return
+        elif offset==0x261de8:flags[a]=flags.get(a,0)|b
+        elif offset==0x261ee8:flags[a]=flags.get(a,0)&~b
+        elif offset==0x28eda0:long_modes[a]=b
+        elif offset==0x262008:ret(bool(flags.get(a,0)&b));return
         ret()
     for address in [O+c for c in calls]+list(imports.values())+[
             symbols['xreal_compare_algorithm'],symbols['xreal_compare_set']]:
@@ -132,7 +154,9 @@ def test(path):
     original=trace[:]; trace.clear();count=0
     # Invoke the real patched BL + thunk + assembly dispatcher.
     run(O+0x540e8,[0,0,0,0],stop=O+0x540ec)
-    clone=trace[1:]
+    clone=trace[1:1+len(original)]
+    assert struct.unpack('<H',u.mem_read(tabview+0x48,2))[0]==5
+    assert trace[1+len(original):][0][0]==0x28db28
     assert len(original)==len(clone), (len(original),len(clone))
     for left,right in zip(original,clone):
         arity=1 if left[0] in (0x261db0,0x28db28,0x28c8b0) else (2 if left[0] in (0x28eb08,0x28eda0,0x261de8,0x267d90,0x28c8e8,0x28d500) else 3)
@@ -167,7 +191,8 @@ def test(path):
     assert [readi(p+0xb0) for p in registered]==[0,3,4,1,2]
     assert registered[2]==symbols['extra'], 'Navigation must retain a persistent item'
     rectangles=[(*positions[readq(p+0x38)],*sizes[readq(p+0x38)]) for p in registered]
-    assert rectangles==[(0,i*76,760,72) for i in range(5)],rectangles
+    assert rectangles==[(0,3+i*82,760,76) for i in range(5)],rectangles
+    assert registration_snapshots[-1]==[(0,3+i*82) for i in range(5)]
     assert all(y+h<=410 for x,y,w,h in rectangles), 'Rows must fit native viewport'
     assert all(rectangles[i][1]+rectangles[i][3]<=rectangles[i+1][1] for i in range(4))
     if 'layout_list' in symbols:
@@ -182,17 +207,80 @@ def test(path):
         before=geometry_calls()
         run(O+0xf9bc0,[D+0x7000,vector,D+0x7100,D+0x7200],stop=O+0xf9bc4)
         assert geometry_calls()>before, 'Native registration must force layout'
-        assert [positions[readq(p+0x38)] for p in registered]==[(0,i*76) for i in range(5)]
+        assert [positions[readq(p+0x38)] for p in registered]==[(0,3+i*82) for i in range(5)]
+    # All visible children have equal padding and stay within their row.
+    for item in registered:
+        title,icon,mark=(readq(item+at) for at in (0,0x18,0x20))
+        assert positions[title]==(142,11) and sizes[title]==(520,54)
+        assert long_modes[title]==4
+        assert positions[icon]==(52,8) and sizes[icon]==(80,60)
+        assert positions[mark]==(26,30) and sizes[mark]==(16,16)
+        for widget in (title,icon,mark):
+            x,y=positions[widget];w,h=sizes[widget]
+            assert y==(76-h)//2 and y+h<=76 and x+w<=760
+        assert flags[readq(item+0x10)]&1, 'Subtitle must not overlap the full-height title'
+    # Hidden native rows are omitted and reopening must not restore the old
+    # cloned y=94 or leave a hole between visible entries.
+    for item in entries[2:]:flags[readq(item+0x38)]=1
+    for _ in range(3):
+        positions[readq(symbols['extra']+0x38)]=(0,94)
+        run(O+0xf9bc0,[D+0x7000,vector,D+0x7100,D+0x7200],stop=O+0xf9bc4)
+        assert readq(listp+24)==vec+3*0x120
+        assert [positions[readq(vec+i*0x120+0x38)] for i in range(3)]==[(0,3),(0,85),(0,167)]
+    # A shortened registration vector also receives the additional mode.
+    writeq(vector+8,pointers+16)
+    run(O+0xf9bc0,[D+0x7000,vector,D+0x7100,D+0x7200],stop=O+0xf9bc4)
+    assert [readi(p+0xb0) for p in registered]==[0,3,4]
+    # Restore all modes, then change visibility without rebuilding the vector:
+    # the UI_FAST cache must notice a hidden row and compact subsequent rows.
+    writeq(vector+8,pointers+32)
+    for item in entries:flags[readq(item+0x38)]=0
+    run(O+0xf9bc0,[D+0x7000,vector,D+0x7100,D+0x7200],stop=O+0xf9bc4)
+    flags[readq(vec+0x38)]=1
+    run(O+0xf49a4,[listp,3],stop=O+0xf49a8)
+    assert positions[readq(vec+0x120+0x38)]==(0,3)
+    flags[readq(vec+0x38)]=0
+    run(O+0xf49a4,[listp,3],stop=O+0xf49a8)
+    assert positions[readq(vec+0x120+0x38)]==(0,85)
     # Native navigation omits hidden SBS modes on some inputs. rc6's exact
     # five-entry guard skipped layout for this valid three-item list.
     writeq(listp+24,vec+3*0x120)
     for p in registered[1:3]:positions[readq(p+0x38)]=(0,94)
     run(O+0xf49a4,[listp,3],stop=O+0xf49a8)
-    assert [positions[readq(p+0x38)] for p in registered[:3]]==[(0,0),(0,76),(0,152)]
+    assert [positions[readq(p+0x38)] for p in registered[:3]]==[(0,3),(0,85),(0,167)]
+    # Execute the actual vendor registration (not our external-service model).
+    # Stub allocation/LVGL only; native filtering, strings, row copies, ordering
+    # and list rebuilding run as ARM64 instructions from the pinned ELF.
+    native_registration=True
+    registry=D+0x7400; exclusions=D+0x7500
+    groups=D+0x7600; group_pointers=D+0x7700; group_header=tabview
+    writeq(group_pointers,listp)
+    for at,value in ((0,group_pointers),(8,group_pointers+8),(16,group_pointers+8)):
+        writeq(groups+at,value)
+    writeq(listp,group_header);writeq(listp+8,D+0x800)
+    assert struct.unpack('<H',u.mem_read(group_header+0x48,2))[0]==5
+    writeq(listp+32,vec+5*0x120)
+    # Negative control: the old four-tab selector really truncates the native
+    # rebuilt list even when five row objects and five pointers are supplied.
+    for item in entries:flags[readq(item+0x38)]=0
+    u.mem_write(tabview+0x48,struct.pack('<H',4))
+    run(O+0xf9bc0,[registry,vector,exclusions,groups],stop=O+0xf9bc4)
+    assert (readq(listp+24)-readq(listp+16))//0x120==4
+    u.mem_write(tabview+0x48,struct.pack('<H',5))
+    for iteration in range(4):
+        for item in entries:flags[readq(item+0x38)]=0
+        if iteration==2:flags[readq(entries[2]+0x38)]=1
+        run(O+0xf9bc0,[registry,vector,exclusions,groups],stop=O+0xf9bc4)
+        count=(readq(listp+24)-readq(listp+16))//0x120
+        rows=[readq(listp+16)+i*0x120 for i in range(count)]
+        expected_modes=[0,3,4,2] if iteration==2 else [0,3,4,1,2]
+        assert [readi(p+0xb0) for p in rows]==expected_modes
+        assert [positions[readq(p+0x38)] for p in rows]==[(0,3+i*82) for i in range(count)]
+        assert all(flags[readq(p+0x10)]&1 for p in rows)
     assert not any(call[0] in (0x16c558,0x1743f8) for call in trace)
     print('ARM64 UI: identical native row styles, five distinct entries, both callbacks, '
           'separate strength, post-registration non-overlapping rows, correct highlight '
-          'and persistent navigation registration passed.')
+          'and real vendor registration with five navigation cells passed.')
 
 
 if __name__=='__main__':test(sys.argv[1])
