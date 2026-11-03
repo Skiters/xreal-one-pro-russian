@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work/elfdeps"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "installer"))
 from version import VERSION
 from elftools.elf.elffile import ELFFile
-from unicorn import Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM
+from unicorn import Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_BLOCK
 from unicorn.arm64_const import (
     UC_ARM64_REG_LR, UC_ARM64_REG_PC, UC_ARM64_REG_SP, UC_ARM64_REG_X0,
     UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3,
@@ -19,17 +19,22 @@ from unicorn.arm64_const import (
     UC_ARM64_REG_X7,
 )
 
-blob = Path(os.environ.get("REAL3D_LIB", Path(__file__).resolve().parents[2] / f"outputs/v{VERSION}/libxreal_cpu_adapter.so")).read_bytes()
-elf = ELFFile(io.BytesIO(blob))
-symbols = {s.name: s["st_value"] for s in elf.get_section_by_name(".dynsym").iter_symbols()}
+def load_program(path):
+    elf = ELFFile(io.BytesIO(Path(path).read_bytes()))
+    symbols = {s.name: s["st_value"] for s in elf.get_section_by_name(".dynsym").iter_symbols()}
+    return elf, symbols
+
+
+elf, symbols = load_program(os.environ.get("REAL3D_LIB", Path(__file__).resolve().parents[2] / f"outputs/v{VERSION}/libxreal_cpu_adapter.so"))
 BASE, SRC, DST, DEPTH, STACK, STOP = 0x100000, 0x400000, 0x500000, 0x600000, 0x700000, 0x7FFFFC
 
 
 def run(symbol, source, depth, width, height, stride, depth_width, depth_height,
-        begin=0, end=0, fractional_bits=2):
+        begin=0, end=0, fractional_bits=2, *, program=None, stats=None):
+    executable, addresses = program if program is not None else (elf, symbols)
     machine = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
     machine.mem_map(BASE, 0x200000)
-    for segment in elf.iter_segments():
+    for segment in executable.iter_segments():
         if segment["p_type"] == "PT_LOAD":
             machine.mem_write(BASE + segment["p_vaddr"], segment.data())
     machine.mem_map(SRC, 0x400000)
@@ -50,9 +55,15 @@ def run(symbol, source, depth, width, height, stride, depth_width, depth_height,
         machine.reg_write(reg, value)
     machine.reg_write(UC_ARM64_REG_SP, STACK)
     machine.reg_write(UC_ARM64_REG_LR, STOP)
+    if stats is not None:
+        stats['instructions'] = 0
+        def count_block(_machine, _address, size, _data):
+            stats['instructions'] += size // 4
+        machine.hook_add(UC_HOOK_BLOCK, count_block)
     try:
-        machine.emu_start(BASE + symbols[symbol], STOP, count=10000000)
+        machine.emu_start(BASE + addresses[symbol], STOP, count=10000000)
     except UcError as error:
         raise AssertionError(f"{symbol}: PC={machine.reg_read(UC_ARM64_REG_PC):x}") from error
+    assert machine.reg_read(UC_ARM64_REG_PC) == STOP, 'Kernel did not finish within instruction budget'
     assert machine.reg_read(UC_ARM64_REG_X0) == 0
     return bytes(machine.mem_read(DST, stride * height))

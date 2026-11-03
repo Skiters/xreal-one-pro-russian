@@ -18,7 +18,7 @@ from build import config
 def test(path):
     baseline = (ROOT/'outputs/ui-performance-audit/libnr_osd.so').read_bytes()
     patched = patch_osd(baseline)
-    allowed = {offset(baseline, va)+i for va in (*TIMERS, *TRANSITIONS) for i in range(4)}
+    allowed = {offset(baseline, va)+i for va in TIMERS for i in range(4)}
     assert len(patched) == len(baseline)
     assert all(a == b or i in allowed for i, (a, b) in enumerate(zip(baseline, patched)))
     u = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
@@ -35,7 +35,7 @@ def test(path):
         for duration in (0, 1, 80, 150, 200, 300, 1000, 0xffffffff):
             u.reg_write(UC_ARM64_REG_W0+register, duration)
             u.emu_start(0x1000, 0x1004)
-            assert u.reg_read(UC_ARM64_REG_W2) == duration//2
+            assert u.reg_read(UC_ARM64_REG_W2) == duration
     try:
         patch_osd(patched)
     except ValueError:
@@ -61,6 +61,7 @@ def test(path):
     validate_build(manifest, 'experimental', '2.0.0.20260920102250')
     assert '-DXREAL_UI_FAST=1' in manifest['flags']
     assert manifest['ui_fast']['video_ready_timeout_seconds'] == 7
+    assert manifest['ui_fast']['screen_transition_duration_ratio'] == 1.0
     print('UI fast: ARM64 instructions, exact patch boundary, baseline/hash rejection, model guard, config scope and package checksums passed:',len(expected),'files')
 
 

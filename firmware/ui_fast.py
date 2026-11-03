@@ -7,7 +7,7 @@ import struct
 OSD_SHA = '0067f65b58d6f708d75163ce89224162f0d62c5ee054579eb65b46b9dc77978e'
 # Refresh and animation timers only. Input polling remains 30 ms.
 TIMERS = (0x27d35c, 0x27e4dc)
-# w2 is lv_scr_load_anim's duration. Delay, type and auto-delete are unchanged.
+# w2 is lv_scr_load_anim's duration. Preserve duration, delay, type and auto-delete.
 # Its prologue saves w2 into w25 and stores it at animation.time (+0x4c).
 TRANSITIONS = {0x2b3f0: 22, 0xa46cc: 20, 0xa47b4: 28}
 
@@ -29,9 +29,6 @@ def patch_osd(data):
         raise ValueError('UI experiment requires the exact rc7 OSD')
     result = bytearray(data)
     patches = {va: (0x528003c1, 0x52800201) for va in TIMERS}
-    for va, reg in TRANSITIONS.items():
-        # MOV w2,wN -> LSR w2,wN,#1. Zero duration stays zero.
-        patches[va] = (0x2a0003e2 | reg << 16, 0x53017c02 | reg << 5)
     for va, (before, after) in patches.items():
         at = offset(data, va)
         if struct.unpack_from('<I', data, at)[0] != before:
@@ -63,7 +60,7 @@ def apply(files, model):
         raise ValueError('Missing expected ASUS modules')
     return {'status': 'local candidate; physical performance unmeasured',
             'osd_base_sha256': OSD_SHA, 'refresh_timer_ms': 16, 'animation_timer_ms': 16,
-            'screen_transition_duration_ratio': 0.5, 'layout_cache': True,
+            'screen_transition_duration_ratio': 1.0, 'layout_cache': True,
             'hdr_timing_log_interval_frames': 1800, 'action_interface_logs': False,
             'boot_first_wait_seconds': 0.25, 'video_ready_timeout_seconds': 7,
             'removed': removed,

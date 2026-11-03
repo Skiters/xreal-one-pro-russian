@@ -124,7 +124,7 @@ command and use a separate output directory. The BIN name ends with
 The opt-in changes are:
 
 1. Change the exact rc7 OSD refresh and animation timers from 30 to 16 ms;
-   halve screen-load transition durations. Input polling and other LVGL
+   preserve full screen-load transition durations. Input polling and other LVGL
    timers are unchanged. A 16 ms timer is a scheduling target, not measured FPS.
 2. Disable normal action/interface logs and sample HDR processing times every
    1800 instead of 30 frames. Error paths and initialization logs remain.
@@ -158,6 +158,48 @@ model rejection, unknown-ELF rejection and the complete package checksums.
 The second executes native row construction and tests cache invalidation and
 forced geometry repair after navigation registration. Frame-bound regression
 checks also passed with `REAL3D_LIB` pointing at the candidate adapter.
+
+## Exact-output Real3D optimization — 2026-11-03, local candidate
+
+The Pro+ CPU warp now interpolates four neighbouring luma pixels using ARM64
+vector lanes and two chroma pixels using independent packed integer lanes.
+Each group shares a depth sample and fractional weight. The Q5 weights,
+rounding, clamped edges, depth scale, frame dimensions and worker count are
+unchanged. Integer shifts retain the direct-copy path. Source loads remain
+within the visible row; no extra frame buffer, HAL/cache changes, dropped
+frames or lower-resolution depth map are introduced. The native One Pro mesh
+and AI HDR kernel are unchanged.
+
+The retained rc6 device log had 36 successful Pro+ CPU samples: median compute
+19.668 ms, mapping 1.179 ms and flush 0.559 ms. This historical log identifies
+the compute bottleneck; it is not a measurement of this new build. Its local
+SHA256 is `0edece34bc235bba7f5002e4c9cd17d22808533e48d421b9406c20fb0b550c76`.
+
+Against the preceding menu-spacing candidate (source revision `28ffc36`),
+30 deterministic full-width ARM64 comparisons and 90 worker partitions have
+byte-identical output, including stride padding. An independent geometry
+oracle also passes all 1,536 combinations of depth value, Q2/Q3/Q4 encoding
+and luma/chroma scale. On mixed-depth inputs, executed instruction counts
+fall 65.10–68.72% for luma and 41.22–42.64% for chroma. Zero/integer-depth
+cases are essentially unchanged (up to 0.19% more instructions at clamped
+edges). Instruction counts are **not clock cycles or measured FPS**; memory,
+NEON costs, NPU processing and scheduling still require hardware measurement.
+
+The UI option also restores the original screen transition durations that
+the October candidate halved. Only the two refresh/animation timer
+instructions are patched in OSD; transitions keep their full duration and
+effect. The native ARM64 UI regression and all 100 frame-descriptor cases
+pass. Public release assets have not been replaced and this candidate has
+not been flashed or visually tested on the glasses.
+
+Reproduce the instruction/output comparison after building both adapters:
+
+```text
+python firmware/tests/compare_warp_work.py <before.so> <after.so> --output <report.json>
+```
+
+This measures just the Pro+ CPU warp, so it does not establish faster cold
+boot, faster SDR-only menus or a performance improvement on One/1S.
 
 Installed on One Pro X1112010 on 2026-10-21. All 54 files were read back and
 matched after USB export retries following restart; no second firmware write
