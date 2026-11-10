@@ -51,40 +51,80 @@ FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
 CONFIG = 'pilot/conf/pilot_default_config.json'
 
 
-def experimental_config(data):
-    """Opt-in experiment, exact text edits that keep the vendor comments.
+GAME_OSD_SHA = '0067f65b58d6f708d75163ce89224162f0d62c5ee054579eb65b46b9dc77978e'  # rc7 libnr_osd.so
+GAME_ITEM_VA = 0xf20d0           # display-mode list: the "Movie" row's mode code
+GAME_ITEM_BEFORE = 0x52800087    # mov w7, #4  (Movie)
+GAME_ITEM_AFTER = 0x528000a7     # mov w7, #5  (vendor "game" mode: EDID 1920_1080_144)
+OSD = 'pilot/bin/libnr_osd.so'
+LANG = 'pilot/resource/osd_language.csv'
 
-    1. Offer the vendor "Gaming - 144Hz" hot key (over_clocking). The mode stays
-       off by default; Pilot forwards it to the glasses controller, which
-       rejects it when unsupported (NRDpSetOverclockingEnable "no function").
-    2. Show the vendor "Sound Effects" item (ui_show_flag.audio_effect_item).
-    3. Request 60 Hz instead of 90 Hz from the source in the three CPU-processed
-       modes (AI HDR, Movie, Reading); the CPU cannot process 90 frames/s.
+
+def experimental(files):
+    """Opt-in experiment (-EXP144), exact and asserted edits.
+
+    1. Display mode list: the "Movie" row sends the vendor's hidden "game"
+       mode (5) instead of Movie (4). Pilot's game mode requests EDID
+       1920_1080_144 and maps it to a 144 Hz OLED timing (dp_oled_map). Its
+       separate overclock call is a stub in this Pilot, so this is the only
+       route. One Pro panel support is unverified; a vendor fallback screen
+       exists for the game mode.
+    2. The row is renamed in both Russian columns: "Кино" -> "Игра — 144 Гц".
+    3. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
+       because their frames are processed on the CPU.
     """
+    import struct
     from package_format import validate_config
-    text = data.decode('utf-8')
+
+    def offset(data, va):
+        start = struct.unpack_from('<Q', data, 32)[0]
+        size, count = struct.unpack_from('<HH', data, 54)
+        for i in range(count):
+            kind, _, off, addr, _, length, _, _ = struct.unpack_from('<II6Q', data, start+i*size)
+            if kind == 1 and addr <= va and va+4 <= addr+length:
+                return off+va-addr
+        raise ValueError('Instruction outside file-backed LOAD segment')
     edits = []
+    osd = bytearray(files[OSD])
+    if sha(bytes(osd)) != GAME_OSD_SHA:
+        raise ValueError('EXP144 requires the exact rc7 OSD')
+    at = offset(bytes(osd), GAME_ITEM_VA)
+    if struct.unpack_from('<I', osd, at)[0] != GAME_ITEM_BEFORE:
+        raise ValueError('Unexpected instruction at the Movie display-mode row')
+    struct.pack_into('<I', osd, at, GAME_ITEM_AFTER)
+    files[OSD] = bytes(osd)
+    edits.append(f'{OSD} @{GAME_ITEM_VA:#x}: mov w7,#4 -> mov w7,#5 (Movie row -> game 144 Hz)')
 
-    def once(old, new, start=0, end=None):
-        nonlocal text
-        segment = text[start:end if end is not None else len(text)]
-        if segment.count(old) != 1:
-            raise ValueError(f'Config anchor not unique: {old!r}')
-        at = start + segment.index(old)
-        text = text[:at] + new + text[at+len(old):]
-        edits.append(old.strip()[:60] + ' -> ' + new.strip()[:60])
+    text = files[LANG].decode('utf-8')
+    lines = text.splitlines(keepends=True)
+    rows = [i for i, l in enumerate(lines) if l.startswith(',Movie,')]
+    if len(rows) != 1 or '"' in lines[rows[0]]:
+        raise ValueError('Movie translation row not found exactly once')
+    cells = lines[rows[0]].rstrip('\n').split(',')
+    if cells[13] != 'Кино' or cells[17] != 'Кино':
+        raise ValueError('Unexpected Russian Movie label')
+    cells[13] = cells[17] = 'Игра — 144 Гц'
+    lines[rows[0]] = ','.join(cells) + '\n'
+    files[LANG] = ''.join(lines).encode('utf-8')
+    edits.append(f'{LANG}: Movie (ru) Кино -> Игра — 144 Гц')
 
-    once('"canvas_optimal_3dof","custom_mode"],', '"canvas_optimal_3dof","custom_mode", "over_clocking"],')
-    once('"audio_effect_item":false,', '"audio_effect_item":true,')
-    for section, block in (('"color_mode" :', '"reading" :'), ('"color_mode" :', '"movie" :'),
-                           ('"dynamic_range" :', '"ai hdr" :')):
-        s = text.index(section)
-        b = text.index(block, s)
-        e = text.index('}', b)  # each block's dp line precedes its first nested '}'
-        once('"dp" : "1920_1080_90_DEFAULT",', '"dp" : "1920_1080_60",', b, e)
-    result = text.encode('utf-8')
-    validate_config(result, CONFIG)
-    return result, edits
+    config = files[CONFIG].decode('utf-8')
+    for section, block in (('"color_mode" :', '"reading" :'), ('"dynamic_range" :', '"ai hdr" :')):
+        s = config.index(section)
+        b = config.index(block, s)
+        e = config.index('}', b)
+        old, new = '"dp" : "1920_1080_90_DEFAULT",', '"dp" : "1920_1080_60",'
+        if config[b:e].count(old) != 1:
+            raise ValueError(f'Config anchor not unique in {block}')
+        at = b + config[b:e].index(old)
+        config = config[:at] + new + config[at+len(old):]
+        edits.append(f'{CONFIG} {block.strip(": ")}: dp 1920_1080_90_DEFAULT -> 1920_1080_60')
+    s = config.index('"color_mode" :')
+    game = config.index('"game" :', s)
+    if '"dp" : "1920_1080_144"' not in config[game:config.index('}', game)]:
+        raise ValueError('Vendor game mode no longer requests 1920_1080_144')
+    files[CONFIG] = config.encode('utf-8')
+    validate_config(files[CONFIG], CONFIG)
+    return [OSD, LANG, CONFIG], edits
 
 
 def sha(data):
@@ -232,11 +272,11 @@ def build(args):
               'abi': abi_report})
     changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
     if args.experimental:
-        files[CONFIG], edits = experimental_config(files[CONFIG])
-        changed_expected.append(CONFIG)
-        manifest['perf']['experimental_config'] = {
-            'file': CONFIG, 'edits': edits,
-            'note': '144 Hz hot key is off by default; hardware support on One Pro is unverified'}
+        changed, edits = experimental(files)
+        changed_expected += changed
+        manifest['perf']['experimental'] = {
+            'edits': edits,
+            'note': 'Display-mode "Игра — 144 Гц" replaces Movie; 144 Hz on the One Pro panel is unverified'}
         manifest['perf']['changed_files'] = changed_expected
     manifest['build_id'] = sha(encode(manifest))
     validate_build(manifest, 'experimental', PILOT)
@@ -295,5 +335,5 @@ if __name__ == '__main__':
     p.add_argument('--output', type=Path, default=ROOT/'outputs/perf')
     p.add_argument('--tag', default='perf1')
     p.add_argument('--experimental', action='store_true',
-                   help='Also apply experimental_config(): 144 Hz hot key, sound effects item, 60 Hz CPU modes')
+                   help='Also apply experimental(): Movie row -> game 144 Hz, 60 Hz for AI HDR/Reading')
     build(p.parse_args())
