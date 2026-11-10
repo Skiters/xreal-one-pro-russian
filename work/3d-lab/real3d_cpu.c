@@ -197,6 +197,7 @@ static void sample_cell2(u8 *dst, const u8 *src, u32 frac) {
  * interpolation of the 480x270 map instead of 4-pixel steps along slanted
  * edges. Cells whose neighbours carry the same displacement keep the shared
  * fast path. */
+#define HFLAT 4U
 static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 width, u32 height, u32 src_stride,
                                  u32 dst_stride, u32 depth_width,
@@ -246,13 +247,34 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                     u32 mid = blend[zx];
                     u32 left = blend[zx ? zx - 1 : zx];
                     u32 right = blend[zx + 1 < depth_width ? zx + 1 : zx];
-                    if (left != mid || right != mid) {
-                        u32 hden = 2 * pixels, hshift = pixels == 4 ? 3 : 2;
-                        for (u32 k = 0; k < pixels; ++k) {
-                            int num = 2 * (int)k + 1 - (int)pixels;
-                            u32 w = (u32)(num < 0 ? -num : num);
-                            u32 shift = (mid * (hden - w) + (num < 0 ? left : right) * w + pixels) >> hshift;
-                            d[x + k] = sample_q5(s, (int)((x + k) * 32 + shift), width);
+                    /* Neighbours within HFLAT (1/8 pixel): the cell keeps one
+                     * displacement; per-pixel blending would move pixels by
+                     * at most 0.05 px there, which is invisible. */
+                    u32 dl = left > mid ? left - mid : mid - left;
+                    u32 dr = right > mid ? right - mid : mid - right;
+                    if (dl > HFLAT || dr > HFLAT) {
+                        u32 sh[4];
+                        if (pixels == 4) {
+                            sh[0] = (5 * mid + 3 * left + 4) >> 3;
+                            sh[1] = (7 * mid + left + 4) >> 3;
+                            sh[2] = (7 * mid + right + 4) >> 3;
+                            sh[3] = (5 * mid + 3 * right + 4) >> 3;
+                        } else {
+                            sh[0] = (3 * mid + left + 2) >> 2;
+                            sh[1] = (3 * mid + right + 2) >> 2;
+                        }
+                        u32 top = mid > left ? mid : left;
+                        if (right > top) top = right;
+                        if ((((x + pixels - 1) * 32 + top) >> 5) + 1 < width) {
+                            /* Every sample and its right neighbour lie inside the
+                             * row: the same arithmetic as sample_q5, unchecked. */
+                            for (u32 k = 0; k < pixels; ++k) {
+                                u32 q = (x + k) * 32 + sh[k], i = q >> 5, f = q & 31;
+                                d[x + k] = (u8)((s[i] * (32 - f) + s[i + 1] * f + 16) >> 5);
+                            }
+                        } else {
+                            for (u32 k = 0; k < pixels; ++k)
+                                d[x + k] = sample_q5(s, (int)((x + k) * 32 + sh[k]), width);
                         }
                         continue;
                     }

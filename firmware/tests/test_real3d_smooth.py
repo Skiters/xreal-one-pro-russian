@@ -39,10 +39,12 @@ def oracle(src, depth, width, height, stride, dw, dh, bits, begin, end, fill, bi
             zx, k = divmod(x, ratio)
             shift = vertical(zx)
             if bilinear:
-                hnum = 2*k + 1 - ratio
-                side = vertical(max(zx-1, 0) if hnum < 0 else min(zx+1, dw-1))
-                hden, hw = 2*ratio, abs(hnum)
-                shift = (shift*(hden-hw) + side*hw + ratio) >> (hden.bit_length()-1)
+                left, right = vertical(max(zx-1, 0)), vertical(min(zx+1, dw-1))
+                if abs(left-shift) > 4 or abs(right-shift) > 4:  # HFLAT: 1/8 px
+                    hnum = 2*k + 1 - ratio
+                    side = left if hnum < 0 else right
+                    hden, hw = 2*ratio, abs(hnum)
+                    shift = (shift*(hden-hw) + side*hw + ratio) >> (hden.bit_length()-1)
             out[y*stride+x] = sample_q5(row, x*32 + shift, width)
     return bytes(out)
 
@@ -62,12 +64,14 @@ def main(path):
         dw, dh = 60, 6
         width, height, stride = dw*ratio, dh*ratio, dw*ratio + 24
         for bits in (2, 3, 4):
-            for kind in ('random', 'step', 'flat-rows', 'flat'):
+            for kind in ('random', 'step', 'flat-rows', 'flat', 'ramp'):
                 src = bytes(rng.randrange(256) for _ in range(stride*height))
                 if kind == 'random':
                     depth = bytes(rng.randrange(256) for _ in range(dw*dh))
                 elif kind == 'step':  # a slanted foreground edge: the staircase case
                     depth = bytes(200 if zx > 20 + 3*zy else 10 for zy in range(dh) for zx in range(dw))
+                elif kind == 'ramp':  # neighbours 0..3 depth units apart
+                    depth = bytes((zx*rng.randrange(4) + zy) % 256 for zy in range(dh) for zx in range(dw))
                 elif kind == 'flat-rows':
                     line = [rng.randrange(256) for _ in range(dw)]
                     depth = bytes(line*dh)

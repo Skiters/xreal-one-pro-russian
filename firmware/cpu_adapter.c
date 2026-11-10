@@ -29,24 +29,28 @@ extern int xreal_full_rgb_lut(const u64 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern u64 xreal_compact_table_bytes(void);
 extern int xreal_build_compact_table_range(const u16 *,u32 *,u32,u32);
 extern int xreal_compact_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
-extern int xreal_compact_pf_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
-extern u64 xreal_tetra_table_bytes(void);
-extern int xreal_build_tetra_table(const u16 *,u32 *);
-extern int xreal_tetra_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
-/* Kernels: 0 dense (rc7 table, only a fallback when the compact table cannot
- * be built), 1 compact, 2 compact with table prefetch (same table and
- * output), 3 tetrahedral (19.7 KiB L1-resident cube; within 3 levels of the
- * trilinear reference, see lut_fast.c). perf2 on the device: compact always
- * beat dense and compact2. Kernels 1..3 are tuned round-robin, TUNE frames
- * each, lowest median wins; tetra is skipped if its table is unavailable. */
-#define TUNE 20
-#define KERNELS 4
-static u32 *compact, *tetra;
+/* Kernels: 0 dense (rc7 table, only when the compact table cannot be built),
+ * 1 compact. perf4 autotune on the device (video): compact 23.4 ms, compact
+ * with prefetch 33.7, tetrahedral 33.4; earlier dense and compact2 also lost.
+ * The alternatives stay in lut_fast.c (tested) but are no longer tuned, so
+ * the first seconds of AI HDR no longer run slow kernels. */
+static u32 *compact;
 static int choice=-1;
-static u32 tune[KERNELS][TUNE], tuned[KERNELS];
-static u32 median(u32 *v,u32 n) {
-    for(u32 i=1;i<n;i++)for(u32 j=i;j && v[j-1]>v[j];j--){u32 x=v[j];v[j]=v[j-1];v[j-1]=x;}
-    return v[n/2];
+/* Diagnostic: a sparse signature of each input frame (before conversion),
+ * compared with the previous one, to measure how many frames the source
+ * repeats (e.g. 24/30 fps video in a 60 Hz signal). Logged every 300 frames.
+ * Sampling can miss tiny changes; the count is an estimate only. */
+static u64 last_signature;
+static u32 repeats, signature_us_max;
+static u64 signature(u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
+    u64 x=0xcbf29ce484222325ULL;
+    for(u32 c=0;c<3;c++)
+        for(u32 y=3;y<h;y+=8)
+            for(u32 col=(y*37)%160;col+8<=w;col+=160) {
+                u64 v;__builtin_memcpy(&v,planes[c]+(u64)y*strides[c]+col,8);
+                x=(x^v)*0x100000001b3ULL;
+            }
+    return x;
 }
 static void trace(const char *stage,u64 p,u32 n,long value) {
     char line[200];
@@ -111,15 +115,11 @@ static void *compact_worker(void *arg) {
  * four A53 cores, so fixed quarters made every frame wait for the most
  * interrupted core; now the idle cores finish its remaining bands. */
 #define CHUNK 24
-struct rgb_frame {const u64 *table;const u32 *compact,*tetra;int kernel;u8 *planes[3];u32 strides[3],width,height,chunks,next;int rc;};
+struct rgb_frame {const u64 *table;const u32 *compact;int kernel;u8 *planes[3];u32 strides[3],width,height,chunks,next;int rc;};
 struct rgb_job {struct rgb_frame *f;int rc;};
 static int rgb_rows(const struct rgb_frame *f,u32 begin,u32 rows) {
     u8 *p[3];
     for(u32 c=0;c<3;c++)p[c]=f->planes[c]+(u64)begin*f->strides[c];
-    if(f->kernel==3)
-        return xreal_tetra_rgb_lut(f->tetra,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
-    if(f->kernel==2)
-        return xreal_compact_pf_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     if(f->kernel==1)
         return xreal_compact_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     return xreal_full_rgb_lut(f->table,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
@@ -136,8 +136,8 @@ static void *rgb_worker(void *arg) {
     }
     return (void *)0;
 }
-static int rgb_parallel(const u64 *table,const u32 *small,const u32 *tiny,int kernel,u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
-    struct rgb_frame f={table,small,tiny,kernel,{planes[0],planes[1],planes[2]},
+static int rgb_parallel(const u64 *table,const u32 *small,int kernel,u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
+    struct rgb_frame f={table,small,kernel,{planes[0],planes[1],planes[2]},
                         {strides[0],strides[1],strides[2]},w,h,(h+CHUNK-1)/CHUNK,0,0};
     struct rgb_job jobs[4];
     for(u32 i=0;i<4;i++)jobs[i]=(struct rgb_job){&f,0};
@@ -163,8 +163,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;
-        free(tetra);tetra=(void *)0;
-        choice=-1;for(u32 k=0;k<KERNELS;k++)tuned[k]=0;
+        choice=-1;last_signature=0;repeats=0;signature_us_max=0;
         int rc=0;
         u32 *small=malloc(xreal_compact_table_bytes());
         int crc=small ? 0 : -12;
@@ -174,13 +173,8 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
             xreal_parallel_run(compact_worker,cjobs,sizeof(cjobs[0]),4);
             for(u32 i=0;i<4;i++)if(cjobs[i].rc)crc=cjobs[i].rc;
         }
-        if(!crc) {
-            compact=small;
-            /* Optional third candidate; tuning skips it if unavailable. */
-            u32 *cube_table=malloc(xreal_tetra_table_bytes());
-            if(cube_table && !xreal_build_tetra_table(cube,cube_table))tetra=cube_table;
-            else{free(cube_table);record("perf: tetra table unavailable",-12);}
-        } else {
+        if(!crc){compact=small;choice=1;}
+        else {
             /* Compact table unavailable: rc7 behaviour with the dense table. */
             free(small);record("perf: compact table unavailable, dense only",crc);
             u64 *next=malloc(xreal_rgb_table_bytes());
@@ -199,11 +193,11 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         u64 p=*(const u64 *)call->args;
         if(!valid(p,64))return -22;
         record("LUT closing",0);free(dense);dense=(void *)0;
-        free(compact);compact=(void *)0;free(tetra);tetra=(void *)0;
+        free(compact);compact=(void *)0;
         choice=-1;return result(p,0);
     }
     if(strcmp(call->name,"ArArmlut3dProcessRgbToYuv"))return xreal_real3d_rpc(core,call,sync);
-    if(call->length!=52 || (choice==0 ? !dense : choice==3 ? !tetra : !compact))return -22;
+    if(call->length!=52 || choice<0 || (choice==0 ? !dense : !compact))return -22;
     const struct frame_args *a=call->args;
     if(!a->width || !a->height || a->width>1920 || a->height>1080 ||
        (a->width&1)||(a->height&1)||(a->strides[0]&1)||!valid(a->result,64))return -22;
@@ -216,33 +210,19 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         for(u32 j=0;j<i;j++) if(a->planes[i]<a->planes[j]+sizes[j] && a->planes[j]<a->planes[i]+sizes[i])return -22;
     }
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
-    struct timespec before,converted,flushed;
-    /* Tuning rotates kernels 1, 2 and (if its table exists) 3. */
-    u32 candidates=tetra ? 3 : 2;
-    int kernel=choice>=0 ? choice : 1+(int)(frame_count%candidates);
+    struct timespec before,signed_at,converted,flushed;
     clock_gettime(1,&before);
-    rc=rgb_parallel(dense,compact,tetra,kernel,
-                    planes,a->strides,a->width,a->height);
-    clock_gettime(1,&converted);
-    if(!rc && choice<0) {
-        long us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
-        if(tuned[kernel]<TUNE)tune[kernel][tuned[kernel]++]=(u32)(us>0 ? us : 0);
-        if(tuned[1]>=TUNE && tuned[2]>=TUNE && (!tetra || tuned[3]>=TUNE)) {
-            u32 m[KERNELS]={0,0,0,0};
-            choice=1;
-            for(u32 k=1;k<=candidates;k++){m[k]=median(tune[k],TUNE);if(m[k]<m[choice])choice=(int)k;}
-            static const char *names[KERNELS]={"dense","compact","compact_pf","tetra"};
-            char line[220];
-            int n=snprintf(line,sizeof(line),"CPU perf4: autotune compact_median_us=%u compact_pf_median_us=%u tetra_median_us=%u choice=%s chunks=%u\n",
-                           m[1],m[2],m[3],names[choice],(a->height+CHUNK-1)/CHUNK);
-            if(n>0 && n<(int)sizeof(line)) {
-                int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
-                if(fd>=0){write(fd,line,(u64)n);close(fd);}
-            }
-            if(choice==3){free(compact);compact=(void *)0;}
-            else{free(tetra);tetra=(void *)0;}
-        }
+    u64 sig=signature(planes,a->strides,a->width,a->height);
+    if(frame_count && sig==last_signature)repeats++;
+    last_signature=sig;
+    clock_gettime(1,&signed_at);
+    {
+        long us=(signed_at.sec-before.sec)*1000000+(signed_at.nsec-before.nsec)/1000;
+        if(us>(long)signature_us_max)signature_us_max=(u32)us;
     }
+    before=signed_at;
+    rc=rgb_parallel(dense,compact,choice,planes,a->strides,a->width,a->height);
+    clock_gettime(1,&converted);
     if(!rc && sizes[0]>0x100000) {
         /* Vendor HAL uses a global cache-flush ioctl for sizes above 1 MiB.
          * All three RGB planes have been modified before this call. */
@@ -265,9 +245,11 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         trace("flush microseconds",a->planes[0],a->width,flush_us);
         trace("frame timestamp microseconds",0,frame_count,
               flushed.sec*1000000+flushed.nsec/1000);
-        if(frame_count%300==0) {
+        if(frame_count%300==0 && frame_count) {
+            trace("perf5 repeated frames per 300",0,frame_count,(long)repeats);
+            trace("perf5 signature max microseconds",0,frame_count,(long)signature_us_max);
+            repeats=0;signature_us_max=0;
             trace("cpu0 kHz",0,frame_count,sysfs_number("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"));
-            trace("thermal0 mC",0,frame_count,sysfs_number("/sys/class/thermal/thermal_zone0/temp"));
         }
     }
 done:

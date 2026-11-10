@@ -104,6 +104,23 @@ the real A53, and the same compact kernel ran slower than in the perf1 run
   0.04% by 2, 0.001% by 3 (saturated violet); Movie stays within 1 level.
   Log line `CPU perf4: autotune compact… compact_pf… tetra… choice=…`.
 
+## perf5
+
+Measured with perf4/HDR60 on X1112011: AI HDR on video 18.5 ms, 48.5 fps
+(perf2: 20.8 ms, 43–44); autotune on video compact 23.4 / compact_pf 33.7 /
+tetra 33.4 ms. Real3D: staircase gone, but warp 20–30 ms, ~39 fps (perf1:
+10.7 ms, 54) because most cells took the per-pixel bilinear path.
+
+- **Real3D:** a cell keeps the shared fast path when both neighbours are
+  within 1/8 pixel of its displacement (deviation from full bilinear
+  <= 0.05 px); other cells use an unchecked per-pixel path, with bounds
+  decided once per cell. Oracle mirrors the threshold; ramp case added.
+- **AI HDR:** no autotune, always compact (dense only as fallback), so the
+  first seconds no longer run the slower kernels.
+- **Diagnostic:** a sparse input-frame signature counts repeated source
+  frames (`perf5 repeated frames per 300`) and its own cost; this decides
+  whether skipping repeated frames is worth implementing.
+
 ## Variant `-HDR60` (opt-in)
 
 Same adapter; AI HDR and Reading request **60 Hz** instead of 90 Hz from the
