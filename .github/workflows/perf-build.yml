@@ -58,7 +58,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/perf-v* ]]; then TAG="perf${GITHUB_REF_NAME#perf-v}"; else TAG="perf-${GITHUB_SHA::7}"; fi
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
             --output outputs/perf --tag "$TAG"
-          # Same adapter plus the opt-in config experiment (144 Hz hot key etc.).
+          # Same adapter plus the opt-in 60 Hz source for AI HDR/Reading.
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
             --output outputs/exp --tag "$TAG" --experimental
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/exp/libxreal_cpu_adapter.so
@@ -105,11 +105,11 @@ jobs:
                     f"{item['readback_files']} readback files\n\nChanged vs rc7: "
                     + ', '.join(f'`{n}`' for n in item['changed_files']) + f"\n\n{item['installer_check']}\n")
           aihdr = json.loads(Path('outputs/perf/aihdr-instructions.json').read_text())
-          print('#### AI HDR, ARM64 instructions per pixel (not cycles)\n\n| cube | content | dense | compact | compact2 | max err |\n|---|---|---|---|---|---|')
+          print('#### AI HDR, ARM64 instructions per pixel (not cycles)\n\n| cube | content | dense | compact | compact2 | compact_pf | max err |\n|---|---|---|---|---|---|---|')
           for cube, kinds in aihdr['cubes'].items():
               for kind, v in kinds.items():
                   print(f"| {cube.rsplit('/',1)[-1]} | {kind} | {v['dense_instructions_per_pixel']} | "
-                        f"{v['compact_instructions_per_pixel']} | {v['compact2_instructions_per_pixel']} | {v['max_error_vs_float']} |")
+                        f"{v['compact_instructions_per_pixel']} | {v['compact2_instructions_per_pixel']} | {v['compact_pf_instructions_per_pixel']} | {v['max_error_vs_float']} |")
           warp = json.loads(Path('outputs/perf/real3d-instructions.json').read_text())
           cuts = [c['reduction_percent'] for c in warp['cases']]
           print(f"\n#### Real3D Pro+ warp vs rc7\n\nOutput byte-identical in {len(cuts)} cases; "
@@ -136,9 +136,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat outputs/perf/SHA256SUMS.txt outputs/exp/SHA256SUMS.txt > SHA256SUMS.txt
-          cp outputs/exp/build-report.json build-report-EXP144.json
+          cp outputs/exp/build-report.json build-report-HDR60.json
           gh release create "$GITHUB_REF_NAME" outputs/perf/*.bin outputs/exp/*.bin SHA256SUMS.txt \
-            outputs/perf/build-report.json build-report-EXP144.json outputs/perf/aihdr-instructions.json \
+            outputs/perf/build-report.json build-report-HDR60.json outputs/perf/aihdr-instructions.json \
             outputs/perf/real3d-instructions.json \
             --title "One Pro perf candidate $GITHUB_REF_NAME" --prerelease \
             --notes-file firmware/PERF.md

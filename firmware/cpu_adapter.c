@@ -19,6 +19,7 @@ extern int clock_gettime(int,struct timespec *);
 extern int open(const char *,int,...);
 extern long write(int,const void *,u64);
 extern int close(int);
+extern long read(int,void *,u64);
 extern int snprintf(char *,u64,const char *,...);
 static u64 *dense;
 static u32 frame_count;
@@ -28,17 +29,15 @@ extern int xreal_full_rgb_lut(const u64 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern u64 xreal_compact_table_bytes(void);
 extern int xreal_build_compact_table_range(const u16 *,u32 *,u32,u32);
 extern int xreal_compact_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
-extern u64 xreal_compact2_table_bytes(void);
-extern int xreal_build_compact2_table_range(const u16 *,u32 *,u32,u32);
-extern int xreal_compact2_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
-/* Perf autotune: after every LUT init, run the dense (rc7), compact and
- * compact2 kernels round-robin for TUNE frames each, keep the one with the
- * lowest median conversion time and free the other tables. All stay within
- * one RGB8 level of the cube, so the trial cannot produce visible colour
- * errors (compact and compact2 are bit-identical). */
+extern int xreal_compact_pf_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
+/* Kernels: 0 dense (rc7 table, only a fallback when the compact table cannot
+ * be built), 1 compact, 2 compact with table prefetch. perf2 measured on the
+ * device: compact always beat dense and compact2, so only the two compact
+ * variants are tuned: TUNE frames each, round-robin, lowest median wins.
+ * They share one table and produce bit-identical output. */
 #define TUNE 20
 #define KERNELS 3
-static u32 *compact, *compact2;
+static u32 *compact;
 static int choice=-1;
 static u32 tune[KERNELS][TUNE], tuned[KERNELS];
 static u32 median(u32 *v,u32 n) {
@@ -52,6 +51,15 @@ static void trace(const char *stage,u64 p,u32 n,long value) {
     write(2,line,(u64)count);
     int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
     if(fd>=0){write(fd,line,(u64)count);close(fd);}
+}
+/* Reads a small decimal sysfs value; -1 when unavailable. Diagnostics only. */
+static long sysfs_number(const char *path) {
+    char text[32];int fd=open(path,0);
+    if(fd<0)return -1;
+    long n=read(fd,text,sizeof(text)-1);close(fd);
+    if(n<=0)return -1;
+    long v=0;for(long i=0;i<n && text[i]>='0' && text[i]<='9';i++)v=v*10+(text[i]-'0');
+    return v;
 }
 static void record(const char *event,int code) {
     char line[160];int n=snprintf(line,sizeof(line),"CPU v7: %s rc=%d frames=%u\n",event,code,frame_count);
@@ -94,37 +102,41 @@ static void *compact_worker(void *arg) {
     j->rc=xreal_build_compact_table_range(j->cube,j->table,j->begin,j->end);
     return (void *)0;
 }
-static void *compact2_worker(void *arg) {
-    struct compact_job *j=arg;
-    j->rc=xreal_build_compact2_table_range(j->cube,j->table,j->begin,j->end);
-    return (void *)0;
+/* Dynamic row scheduling: the frame is cut into CHUNK-row bands and each of
+ * the four workers takes the next free band. Pilot's own threads share the
+ * four A53 cores, so fixed quarters made every frame wait for the most
+ * interrupted core; now the idle cores finish its remaining bands. */
+#define CHUNK 24
+struct rgb_frame {const u64 *table;const u32 *compact;int kernel;u8 *planes[3];u32 strides[3],width,height,chunks,next;int rc;};
+struct rgb_job {struct rgb_frame *f;int rc;};
+static int rgb_rows(const struct rgb_frame *f,u32 begin,u32 rows) {
+    u8 *p[3];
+    for(u32 c=0;c<3;c++)p[c]=f->planes[c]+(u64)begin*f->strides[c];
+    if(f->kernel==2)
+        return xreal_compact_pf_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
+    if(f->kernel==1)
+        return xreal_compact_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
+    return xreal_full_rgb_lut(f->table,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
 }
-struct rgb_job {const u64 *table;const u32 *compact;int kernel;u8 *planes[3];u32 strides[3],width,height;int rc;};
 static void *rgb_worker(void *arg) {
-    struct rgb_job *j=arg;
-    if(j->kernel==2)
-        j->rc=xreal_compact2_rgb_lut(j->compact,j->planes[0],j->planes[1],j->planes[2],
-            j->strides[0],j->strides[1],j->strides[2],j->width,j->height);
-    else if(j->kernel==1)
-        j->rc=xreal_compact_rgb_lut(j->compact,j->planes[0],j->planes[1],j->planes[2],
-            j->strides[0],j->strides[1],j->strides[2],j->width,j->height);
-    else
-        j->rc=xreal_full_rgb_lut(j->table,j->planes[0],j->planes[1],j->planes[2],
-            j->strides[0],j->strides[1],j->strides[2],j->width,j->height);
+    struct rgb_job *j=arg;struct rgb_frame *f=j->f;
+    j->rc=0;
+    for(;;) {
+        u32 chunk=__atomic_fetch_add(&f->next,1,__ATOMIC_RELAXED);
+        if(chunk>=f->chunks)break;
+        u32 begin=chunk*CHUNK,rows=f->height-begin<CHUNK ? f->height-begin : CHUNK;
+        int rc=rgb_rows(f,begin,rows);
+        if(rc && !j->rc)j->rc=rc;
+    }
     return (void *)0;
 }
 static int rgb_parallel(const u64 *table,const u32 *small,int kernel,u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
-    struct rgb_job jobs[4];u32 count=h<4?1:4;
-    for(u32 i=0;i<count;i++) {
-        u32 begin=h*i/count,end=h*(i+1)/count;
-        jobs[i].table=table;jobs[i].compact=small;jobs[i].kernel=kernel;jobs[i].width=w;jobs[i].height=end-begin;jobs[i].rc=0;
-        for(u32 c=0;c<3;c++) {
-            jobs[i].planes[c]=planes[c]+(u64)begin*strides[c];
-            jobs[i].strides[c]=strides[c];
-        }
-    }
-    xreal_parallel_run(rgb_worker,jobs,sizeof(jobs[0]),count);
-    for(u32 i=0;i<count;i++)if(jobs[i].rc)return jobs[i].rc;
+    struct rgb_frame f={table,small,kernel,{planes[0],planes[1],planes[2]},
+                        {strides[0],strides[1],strides[2]},w,h,(h+CHUNK-1)/CHUNK,0,0};
+    struct rgb_job jobs[4];
+    for(u32 i=0;i<4;i++)jobs[i]=(struct rgb_job){&f,0};
+    xreal_parallel_run(rgb_worker,jobs,sizeof(jobs[0]),4);
+    for(u32 i=0;i<4;i++)if(jobs[i].rc)return jobs[i].rc;
     return 0;
 }
 
@@ -145,40 +157,27 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;
-        free(compact2);compact2=(void *)0;
         choice=-1;for(u32 k=0;k<KERNELS;k++)tuned[k]=0;
-        u64 *next=malloc(xreal_rgb_table_bytes());
-        if(!next){record("LUT allocation failed",-12);return result(a->result,-12);}
-        struct build_job jobs[4];
-        for(u32 i=0;i<4;i++)jobs[i]=(struct build_job){cube,next,17*i/4,17*(i+1)/4,0};
-        xreal_parallel_run(build_worker,jobs,sizeof(jobs[0]),4);
         int rc=0;
-        for(u32 i=0;i<4;i++)if(jobs[i].rc)rc=jobs[i].rc;
-        if(rc)free(next);else dense=next;
-        if(!rc) {
-            /* The compact table is optional: on any failure keep rc7 behaviour. */
-            u32 *small=malloc(xreal_compact_table_bytes());
-            int crc=small ? 0 : -12;
-            if(small) {
-                struct compact_job cjobs[4];
-                for(u32 i=0;i<4;i++)cjobs[i]=(struct compact_job){cube,small,17*i/4,17*(i+1)/4,0};
-                xreal_parallel_run(compact_worker,cjobs,sizeof(cjobs[0]),4);
-                for(u32 i=0;i<4;i++)if(cjobs[i].rc)crc=cjobs[i].rc;
-            }
-            if(crc){free(small);choice=0;record("perf: compact table unavailable, dense only",crc);}
-            else {
-                compact=small;
-                u32 *other=malloc(xreal_compact2_table_bytes());
-                int c2=other ? 0 : -12;
-                if(other) {
-                    struct compact_job cjobs[4];
-                    for(u32 i=0;i<4;i++)cjobs[i]=(struct compact_job){cube,other,17*i/4,17*(i+1)/4,0};
-                    xreal_parallel_run(compact2_worker,cjobs,sizeof(cjobs[0]),4);
-                    for(u32 i=0;i<4;i++)if(cjobs[i].rc)c2=cjobs[i].rc;
-                }
-                if(c2){free(other);record("perf: compact2 table unavailable",c2);}
-                else compact2=other;
-            }
+        u32 *small=malloc(xreal_compact_table_bytes());
+        int crc=small ? 0 : -12;
+        if(small) {
+            struct compact_job cjobs[4];
+            for(u32 i=0;i<4;i++)cjobs[i]=(struct compact_job){cube,small,17*i/4,17*(i+1)/4,0};
+            xreal_parallel_run(compact_worker,cjobs,sizeof(cjobs[0]),4);
+            for(u32 i=0;i<4;i++)if(cjobs[i].rc)crc=cjobs[i].rc;
+        }
+        if(!crc)compact=small;
+        else {
+            /* Compact table unavailable: rc7 behaviour with the dense table. */
+            free(small);record("perf: compact table unavailable, dense only",crc);
+            u64 *next=malloc(xreal_rgb_table_bytes());
+            if(!next){record("LUT allocation failed",-12);return result(a->result,-12);}
+            struct build_job jobs[4];
+            for(u32 i=0;i<4;i++)jobs[i]=(struct build_job){cube,next,17*i/4,17*(i+1)/4,0};
+            xreal_parallel_run(build_worker,jobs,sizeof(jobs[0]),4);
+            for(u32 i=0;i<4;i++)if(jobs[i].rc)rc=jobs[i].rc;
+            if(rc)free(next);else{dense=next;choice=0;}
         }
         frame_count=0;record("LUT initialized",rc);
         return result(a->result,rc);
@@ -188,12 +187,11 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         u64 p=*(const u64 *)call->args;
         if(!valid(p,64))return -22;
         record("LUT closing",0);free(dense);dense=(void *)0;
-        free(compact);compact=(void *)0;free(compact2);compact2=(void *)0;
+        free(compact);compact=(void *)0;
         choice=-1;return result(p,0);
     }
     if(strcmp(call->name,"ArArmlut3dProcessRgbToYuv"))return xreal_real3d_rpc(core,call,sync);
-    if(call->length!=52 || (choice<0 ? (!dense || !compact) :
-       choice==0 ? !dense : choice==1 ? !compact : !compact2))return -22;
+    if(call->length!=52 || (choice==0 ? !dense : !compact))return -22;
     const struct frame_args *a=call->args;
     if(!a->width || !a->height || a->width>1920 || a->height>1080 ||
        (a->width&1)||(a->height&1)||(a->strides[0]&1)||!valid(a->result,64))return -22;
@@ -207,34 +205,25 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     }
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
     struct timespec before,converted,flushed;
-    /* During tuning, skip compact2 if its table could not be built. */
-    u32 kernels=compact2 ? KERNELS : 2;
-    int kernel=choice>=0 ? choice : (int)(frame_count%kernels);
+    /* Tuning alternates kernels 1 and 2 (both use the compact table). */
+    int kernel=choice>=0 ? choice : 1+(int)(frame_count%2);
     clock_gettime(1,&before);
-    rc=rgb_parallel(dense,kernel==2 ? compact2 : kernel==1 ? compact : (u32 *)0,kernel,
+    rc=rgb_parallel(dense,kernel ? compact : (u32 *)0,kernel,
                     planes,a->strides,a->width,a->height);
     clock_gettime(1,&converted);
     if(!rc && choice<0) {
         long us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
         if(tuned[kernel]<TUNE)tune[kernel][tuned[kernel]++]=(u32)(us>0 ? us : 0);
-        int done=1;
-        for(u32 k=0;k<kernels;k++)if(tuned[k]<TUNE)done=0;
-        if(done) {
-            u32 m[KERNELS]={0,0,0};
-            for(u32 k=0;k<kernels;k++)m[k]=median(tune[k],TUNE);
-            choice=0;
-            for(u32 k=1;k<kernels;k++)if(m[k]<m[choice])choice=(int)k;
-            static const char *names[KERNELS]={"dense","compact","compact2"};
+        if(tuned[1]>=TUNE && tuned[2]>=TUNE) {
+            u32 m1=median(tune[1],TUNE),m2=median(tune[2],TUNE);
+            choice=m2<m1 ? 2 : 1;
             char line[200];
-            int n=snprintf(line,sizeof(line),"CPU perf: autotune dense_median_us=%u compact_median_us=%u compact2_median_us=%u choice=%s\n",
-                           m[0],m[1],m[2],names[choice]);
+            int n=snprintf(line,sizeof(line),"CPU perf3: autotune compact_median_us=%u compact_pf_median_us=%u choice=%s chunks=%u\n",
+                           m1,m2,choice==2 ? "compact_pf" : "compact",(a->height+CHUNK-1)/CHUNK);
             if(n>0 && n<(int)sizeof(line)) {
                 int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
                 if(fd>=0){write(fd,line,(u64)n);close(fd);}
             }
-            if(choice!=0){free(dense);dense=(void *)0;}
-            if(choice!=1){free(compact);compact=(void *)0;}
-            if(choice!=2){free(compact2);compact2=(void *)0;}
         }
     }
     if(!rc && sizes[0]>0x100000) {
@@ -259,6 +248,10 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         trace("flush microseconds",a->planes[0],a->width,flush_us);
         trace("frame timestamp microseconds",0,frame_count,
               flushed.sec*1000000+flushed.nsec/1000);
+        if(frame_count%300==0) {
+            trace("cpu0 kHz",0,frame_count,sysfs_number("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"));
+            trace("thermal0 mC",0,frame_count,sysfs_number("/sys/class/thermal/thermal_zone0/temp"));
+        }
     }
 done:
     for(u32 i=0;i<3;i++)if(planes[i])ar_hal_sys_munmap(planes[i],sizes[i]);

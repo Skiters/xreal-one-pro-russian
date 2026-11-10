@@ -75,22 +75,31 @@ Measured on X1112011 with perf1/EXP144: AI HDR autotune chose compact
   not a quick-button function; the OSD hides it on One Pro without asking the
   controller. The EXP144 hot-key edit is therefore inert.
 
-## Experimental variant `-EXP144` (opt-in)
+## perf3
 
-Same adapter, plus three exact, asserted edits (listed in the BIN manifest):
+Measured on X1112011 with perf2: autotune dense 33.0 / compact 29.4 /
+compact2 34.7 ms, steady convert ~20.8 ms, ~43–44 frames/s. compact2 lost on
+the real A53, and the same compact kernel ran slower than in the perf1 run
+(14.4 ms in autotune), which points at core contention or throttling.
 
-1. **Display mode «Игровой» instead of «Насыщенный».** One instruction in
-   `libnr_osd.so` (0xf2048, `mov w7,#2` → `mov w7,#5`): the Vivid row of the
-   display-mode list now selects the vendor's hidden *game* mode, which
-   requests EDID `1920_1080_144` and maps it to a 144 Hz OLED timing. Pilot's
-   separate overclock function is a stub that always reports "unsupported",
-   so this is the only route. Whether the One Pro panel runs 144 Hz is
-   **unverified**; the OSD has a vendor fallback screen for the game mode.
-2. The row is renamed in both Russian columns of `osd_language.csv`
-   («Насыщенный» → «Игровой»), the same technique as the Russian-for-Polish
-   swap. Vivid mode is not reachable in this variant; Movie is unchanged.
-3. AI HDR and Reading request **60 Hz** instead of 90 Hz from the source,
-   because their frames are processed on the CPU.
+- **Dynamic row scheduling** (AI HDR and Real3D): 24-row (AI HDR) / 6 depth
+  row (Real3D) bands taken from a shared counter instead of fixed quarters,
+  so a core busy with Pilot's own threads no longer holds up the frame.
+- **AI HDR:** autotune now compares compact vs compact with table prefetch
+  (same table, bit-identical output); dense is built only if the compact
+  table cannot be, compact2 is no longer used. Log line `CPU perf3: autotune
+  …`; every 300 frames the log also records `cpu0 kHz` and `thermal0 mC`.
+- **Real3D Pro+ bilinear displacement:** besides the vertical blend, each
+  pixel blends with the neighbouring depth column by distance to the cell
+  centres, so slanted edges no longer step in 4-pixel cells. Constant depth
+  gives byte-identical output; an independent per-pixel oracle covers it.
+
+## Variant `-HDR60` (opt-in)
+
+Same adapter; AI HDR and Reading request **60 Hz** instead of 90 Hz from the
+source, because their frames are processed on the CPU. The display-mode menu
+is unchanged rc7 («Насыщенный» is back): the 144 Hz game-mode route was
+removed because the One Pro OSD hides that mode.
 
 Not possible in this firmware: a "Sound Effects" menu (the OSD has no such
 screen; Pilot's audio algorithms are for microphone recording; the speaker

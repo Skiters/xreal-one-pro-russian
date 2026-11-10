@@ -51,62 +51,14 @@ FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
 CONFIG = 'pilot/conf/pilot_default_config.json'
 
 
-GAME_OSD_SHA = '0067f65b58d6f708d75163ce89224162f0d62c5ee054579eb65b46b9dc77978e'  # rc7 libnr_osd.so
-GAME_ITEM_VA = 0xf2048           # display-mode list: the "Vivid" row's mode code
-GAME_ITEM_BEFORE = 0x52800047    # mov w7, #2  (Vivid)
-GAME_ITEM_AFTER = 0x528000a7     # mov w7, #5  (vendor "game" mode: EDID 1920_1080_144)
-OSD = 'pilot/bin/libnr_osd.so'
-LANG = 'pilot/resource/osd_language.csv'
-
-
 def experimental(files):
-    """Opt-in experiment (-EXP144), exact and asserted edits.
-
-    1. Display mode list: the "Vivid" row sends the vendor's hidden "game"
-       mode (5) instead of Vivid (2). Pilot's game mode requests EDID
-       1920_1080_144 and maps it to a 144 Hz OLED timing (dp_oled_map). Its
-       separate overclock call is a stub in this Pilot, so this is the only
-       route. One Pro panel support is unverified; a vendor fallback screen
-       exists for the game mode.
-    2. The row is renamed in both Russian columns: "Насыщенный" -> "Игровой".
-    3. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
-       because their frames are processed on the CPU.
+    """Opt-in variant (-HDR60): AI HDR and Reading request 60 Hz instead of
+    90 Hz from the source, because their frames are processed on the CPU.
+    The display-mode menu is unchanged rc7 (Vivid/«Насыщенный» stays): the
+    144 Hz game-mode route was removed after the One Pro OSD hid that row.
     """
-    import struct
     from package_format import validate_config
-
-    def offset(data, va):
-        start = struct.unpack_from('<Q', data, 32)[0]
-        size, count = struct.unpack_from('<HH', data, 54)
-        for i in range(count):
-            kind, _, off, addr, _, length, _, _ = struct.unpack_from('<II6Q', data, start+i*size)
-            if kind == 1 and addr <= va and va+4 <= addr+length:
-                return off+va-addr
-        raise ValueError('Instruction outside file-backed LOAD segment')
     edits = []
-    osd = bytearray(files[OSD])
-    if sha(bytes(osd)) != GAME_OSD_SHA:
-        raise ValueError('EXP144 requires the exact rc7 OSD')
-    at = offset(bytes(osd), GAME_ITEM_VA)
-    if struct.unpack_from('<I', osd, at)[0] != GAME_ITEM_BEFORE:
-        raise ValueError('Unexpected instruction at the Vivid display-mode row')
-    struct.pack_into('<I', osd, at, GAME_ITEM_AFTER)
-    files[OSD] = bytes(osd)
-    edits.append(f'{OSD} @{GAME_ITEM_VA:#x}: mov w7,#2 -> mov w7,#5 (Vivid row -> game 144 Hz)')
-
-    text = files[LANG].decode('utf-8')
-    lines = text.splitlines(keepends=True)
-    rows = [i for i, l in enumerate(lines) if l.startswith(',Vivid,')]
-    if len(rows) != 1 or '"' in lines[rows[0]]:
-        raise ValueError('Vivid translation row not found exactly once')
-    cells = lines[rows[0]].rstrip('\n').split(',')
-    if cells[13] != 'Насыщенный' or cells[17] != 'Насыщенный':
-        raise ValueError('Unexpected Russian Vivid label')
-    cells[13] = cells[17] = 'Игровой'
-    lines[rows[0]] = ','.join(cells) + '\n'
-    files[LANG] = ''.join(lines).encode('utf-8')
-    edits.append(f'{LANG}: Vivid (ru) Насыщенный -> Игровой')
-
     config = files[CONFIG].decode('utf-8')
     for section, block in (('"color_mode" :', '"reading" :'), ('"dynamic_range" :', '"ai hdr" :')):
         s = config.index(section)
@@ -118,13 +70,9 @@ def experimental(files):
         at = b + config[b:e].index(old)
         config = config[:at] + new + config[at+len(old):]
         edits.append(f'{CONFIG} {block.strip(": ")}: dp 1920_1080_90_DEFAULT -> 1920_1080_60')
-    s = config.index('"color_mode" :')
-    game = config.index('"game" :', s)
-    if '"dp" : "1920_1080_144"' not in config[game:config.index('}', game)]:
-        raise ValueError('Vendor game mode no longer requests 1920_1080_144')
     files[CONFIG] = config.encode('utf-8')
     validate_config(files[CONFIG], CONFIG)
-    return [OSD, LANG, CONFIG], edits
+    return [CONFIG], edits
 
 
 def sha(data):
@@ -266,8 +214,8 @@ def build(args):
         verification='perf candidate built from rc7; physical mode/performance tests required',
         perf={'base_bin_sha256': RC7_SHA, 'base_release': original['release'],
               'changed_files': [ADAPTER, MANIFEST, CHECKSUMS],
-              'aihdr': 'dense 4.25 MiB and compact 289 KiB kernels; on-device autotune picks the faster',
-              'real3d_proplus': 'vectorized exact-output warp (upstream 2689834)',
+              'aihdr': 'compact 289 KiB table; autotune compact vs compact+prefetch; dynamic row scheduling; dense only as fallback',
+              'real3d_proplus': 'vectorized warp, bilinear depth-displacement interpolation, dynamic row scheduling',
               'menu_and_osd': 'unchanged rc7 (compare_ui.c and patched libnr_osd.so)',
               'abi': abi_report})
     changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
@@ -276,7 +224,7 @@ def build(args):
         changed_expected += changed
         manifest['perf']['experimental'] = {
             'edits': edits,
-            'note': 'Display-mode "Игровой" (vendor game mode, 144 Hz) replaces Vivid; 144 Hz on the One Pro panel is unverified'}
+            'note': 'AI HDR and Reading request 60 Hz from the source; display-mode menu unchanged rc7'}
         manifest['perf']['changed_files'] = changed_expected
     manifest['build_id'] = sha(encode(manifest))
     validate_build(manifest, 'experimental', PILOT)
@@ -295,7 +243,7 @@ def build(args):
     packed = bytearray(rc7[:64] + stream.getvalue().translate(XOR))
     packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
     packed[:4] = container_crc(packed).to_bytes(4, 'little')
-    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{"-EXP144" if args.experimental else ""}.bin'
+    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{"-HDR60" if args.experimental else ""}.bin'
     target = out/name
     target.write_bytes(packed)
 
@@ -335,5 +283,5 @@ if __name__ == '__main__':
     p.add_argument('--output', type=Path, default=ROOT/'outputs/perf')
     p.add_argument('--tag', default='perf1')
     p.add_argument('--experimental', action='store_true',
-                   help='Also apply experimental(): Vivid row -> game 144 Hz, 60 Hz for AI HDR/Reading')
+                   help='Also apply experimental(): 60 Hz source for AI HDR/Reading')
     build(p.parse_args())

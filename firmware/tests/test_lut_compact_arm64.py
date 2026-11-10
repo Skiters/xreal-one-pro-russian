@@ -108,7 +108,8 @@ def test(path, bin_path):
                     raw[c][y*pitches[c]+x] = rgb[c]
             outputs, counts = [], []
             for kernel, table in (('xreal_full_rgb_lut', dense), ('xreal_compact_rgb_lut', compact),
-                                  ('xreal_compact2_rgb_lut', compact2)):
+                                  ('xreal_compact2_rgb_lut', compact2),
+                                  ('xreal_compact_pf_rgb_lut', compact)):
                 for ptr, data in zip(planes, raw):
                     m.u.mem_write(ptr, bytes(data))
                 rc, count = m.call(kernel, table, *planes, *pitches, width, height)
@@ -127,11 +128,13 @@ def test(path, bin_path):
                     assert outputs[1][c][y*pitch+width:(y+1)*pitch] == bytes([171])*(pitch-width)
             assert error <= 1, (name, kind, error)
             assert outputs[2] == outputs[1], (name, kind, 'compact2 differs from compact')
+            assert outputs[3] == outputs[1], (name, kind, 'compact_pf differs from compact')
             report.setdefault(name, {})[kind] = {
                 'max_error_vs_float': error, 'max_diff_vs_dense': diff,
                 'dense_instructions_per_pixel': round(counts[0]/(width*height), 2),
                 'compact_instructions_per_pixel': round(counts[1]/(width*height), 2),
-                'compact2_instructions_per_pixel': round(counts[2]/(width*height), 2)}
+                'compact2_instructions_per_pixel': round(counts[2]/(width*height), 2),
+                'compact_pf_instructions_per_pixel': round(counts[3]/(width*height), 2)}
     result = {'library': str(path), 'table_bytes': {'dense': dense_size, 'compact': compact_size},
               'cubes': report,
               'limitation': 'Executed ARM64 instructions in Unicorn, not A53 cycles; cache and '

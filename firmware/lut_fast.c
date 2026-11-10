@@ -134,8 +134,13 @@ int xreal_build_compact_table_range(const u16 *cube, u32 *table,
       ((((p10)>>(shift))&1023)*(ig) + (((p11)>>(shift))&1023)*(wg))*(wb) + \
       COMPACT_DIVISOR/2) / COMPACT_DIVISOR)
 
-int xreal_compact_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
-                          u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+/* prefetch=1: while converting a 4-pixel group, request the table lines of
+ * the group 8 pixels ahead (PRFM, no fault on any address). The in-order A53
+ * otherwise stalls on each table miss; whether the extra instructions pay
+ * off depends on L2 pressure, so the adapter's autotune decides. */
+static inline __attribute__((always_inline))
+int compact_impl(const u32 *table, u8 *r, u8 *g, u8 *b,
+                 u32 rs, u32 gs, u32 bs, u32 width, u32 height, int prefetch) {
     if (!table || !r || !g || !b || !width || !height ||
         width>1920 || height>1080 || rs<width || gs<width || bs<width ||
         rs>4096 || gs>4096 || bs>4096) return -22;
@@ -151,6 +156,14 @@ int xreal_compact_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
             __builtin_memcpy(&kr, rp+x, 4);
             __builtin_memcpy(&kg, gp+x, 4);
             __builtin_memcpy(&kb, bp+x, 4);
+            if (prefetch && x+12 <= width)
+                for (u32 lane = 0; lane < 4; ++lane) {
+                    u32 index = (gmap[gp[x+8+lane]] >> 8) + (bmap[bp[x+8+lane]] >> 8) + rp[x+8+lane];
+                    __builtin_prefetch(table+index, 0, 3);
+                    __builtin_prefetch(table+index+COMPACT_G_STEP, 0, 3);
+                    __builtin_prefetch(table+index+COMPACT_B_STEP, 0, 3);
+                    __builtin_prefetch(table+index+COMPACT_B_STEP+COMPACT_G_STEP, 0, 3);
+                }
             if (have_last && kr == last_r && kg == last_g && kb == last_b) {
                 __builtin_memcpy(rp+x, &out_r, 4);
                 __builtin_memcpy(gp+x, &out_g, 4);
@@ -195,6 +208,17 @@ int xreal_compact_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
         }
     }
     return 0;
+}
+
+int xreal_compact_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
+                          u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    return compact_impl(table, r, g, b, rs, gs, bs, width, height, 0);
+}
+
+/* Same table and bit-identical output as xreal_compact_rgb_lut. */
+int xreal_compact_pf_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
+                             u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    return compact_impl(table, r, g, b, rs, gs, bs, width, height, 1);
 }
 
 /* Compact2: same values and arithmetic as the compact kernel (bit-identical

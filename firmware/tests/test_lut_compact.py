@@ -31,6 +31,8 @@ def main():
     build2.argtypes = build.argtypes
     run2 = lib.xreal_compact2_rgb_lut
     run2.argtypes = run.argtypes
+    run_pf = lib.xreal_compact_pf_rgb_lut
+    run_pf.argtypes = run.argtypes
     assert lib.xreal_compact_table_bytes() == (17*17*256+512)*4
     assert lib.xreal_compact2_table_bytes() == (17*17*256+512)*4
     table2 = (C.c_uint32*(lib.xreal_compact2_table_bytes()//4))()
@@ -64,16 +66,20 @@ def main():
         planes = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         twins = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         thirds = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
+        fourths = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         for i, rgb in enumerate(pixels):
             y, x = divmod(i, width)
             for c in range(3):
                 planes[c][y*pitches[c]+x] = rgb[c]
                 twins[c][y*pitches[c]+x] = rgb[c]
                 thirds[c][y*pitches[c]+x] = rgb[c]
+                fourths[c][y*pitches[c]+x] = rgb[c]
         assert run(table, *planes, *pitches, width, height) == 0
         assert dense_run(dense, *twins, *pitches, width, height) == 0
         assert run2(table2, *thirds, *pitches, width, height) == 0
         assert [bytes(x) for x in thirds] == [bytes(x) for x in planes], 'compact2 must equal compact'
+        assert run_pf(table, *fourths, *pitches, width, height) == 0
+        assert [bytes(x) for x in fourths] == [bytes(x) for x in planes], 'compact_pf must equal compact'
         error = against_dense = 0
         for i, rgb in enumerate(pixels):
             y, x = divmod(i, width)
@@ -91,6 +97,7 @@ def main():
         for w, h, rs in [(0, 4, 1019), (1921, 1, 2000), (1009, 1081, 1019), (1009, 4, 1008)]:
             assert run(table, *planes, rs, pitches[1], pitches[2], w, h) == -22
             assert run2(table2, *planes, rs, pitches[1], pitches[2], w, h) == -22
+            assert run_pf(table, *planes, rs, pitches[1], pitches[2], w, h) == -22
             assert [bytes(x) for x in planes] == previous
         report[name] = {'max_error_vs_float': error, 'max_diff_vs_dense_kernel': against_dense}
     print(json.dumps({'pixels_per_cube': width*height, 'cubes': report}))

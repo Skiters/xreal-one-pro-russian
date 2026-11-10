@@ -191,7 +191,12 @@ static void sample_cell2(u8 *dst, const u8 *src, u32 frac) {
  * object edges show a staircase. smooth=1 blends each output row's
  * displacement with the neighbouring depth row by distance to the row
  * centres (weights 1/8, 3/8 for luma; 1/4 for chroma), clamped at the top
- * and bottom. Horizontal cells and per-cell sampling stay unchanged. */
+ * and bottom. smooth=2 additionally blends horizontally with the
+ * neighbouring depth column by distance to the cell centres (the same
+ * weights), so every output pixel gets its own displacement: bilinear
+ * interpolation of the 480x270 map instead of 4-pixel steps along slanted
+ * edges. Cells whose neighbours carry the same displacement keep the shared
+ * fast path. */
 static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 width, u32 height, u32 src_stride,
                                  u32 dst_stride, u32 depth_width,
@@ -212,7 +217,7 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
         const u8 *z = depth + (size_t)zy * depth_width;
         const u8 *up = depth + (size_t)(zy ? zy - 1 : zy) * depth_width;
         const u8 *down = depth + (size_t)(zy + 1 < depth_height ? zy + 1 : zy) * depth_width;
-        u16 source_x[480], here[480], above[480], below[480];
+        u16 source_x[480], here[480], above[480], below[480], blend[480];
         for (u32 zx = 0; zx < depth_width; ++zx) {
             here[zx] = (u16)depth_shift(z[zx], width, depth_width, fractional_bits);
             source_x[zx] = (u16)(zx * pixels * 32 + here[zx]);
@@ -228,14 +233,30 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                 int num = 2 * (int)ry + 1 - (int)rows;
                 const u16 *other = num < 0 ? above : below;
                 u32 w = (u32)(num < 0 ? -num : num), den = 2 * rows;
-                for (u32 zx = 0; zx < depth_width; ++zx)
-                    source_x[zx] = (u16)(zx * pixels * 32 +
-                        ((here[zx] * (den - w) + other[zx] * w + rows) >> den_shift));
+                for (u32 zx = 0; zx < depth_width; ++zx) {
+                    blend[zx] = (u16)((here[zx] * (den - w) + other[zx] * w + rows) >> den_shift);
+                    source_x[zx] = (u16)(zx * pixels * 32 + blend[zx]);
+                }
             }
             u32 y = zy * rows + ry;
             const u8 *s = src + (size_t)y * src_stride;
             u8 *d = dst + (size_t)y * dst_stride;
             for (u32 zx = 0, x = 0; zx < depth_width; ++zx, x += pixels) {
+                if (smooth == 2) {
+                    u32 mid = blend[zx];
+                    u32 left = blend[zx ? zx - 1 : zx];
+                    u32 right = blend[zx + 1 < depth_width ? zx + 1 : zx];
+                    if (left != mid || right != mid) {
+                        u32 hden = 2 * pixels, hshift = pixels == 4 ? 3 : 2;
+                        for (u32 k = 0; k < pixels; ++k) {
+                            int num = 2 * (int)k + 1 - (int)pixels;
+                            u32 w = (u32)(num < 0 ? -num : num);
+                            u32 shift = (mid * (hden - w) + (num < 0 ? left : right) * w + pixels) >> hshift;
+                            d[x + k] = sample_q5(s, (int)((x + k) * 32 + shift), width);
+                        }
+                        continue;
+                    }
+                }
                 u32 q = source_x[zx], sx = q / 32;
                 if (!(q & 31) && sx + pixels <= width) {
                     if (pixels == 4)
@@ -288,19 +309,38 @@ struct segment_job {
     u32 width[3], height[3], src_stride[3], dst_stride[3];
     u32 depth_width, depth_height, fractional_bits;
     u32 begin, end;
+    u32 *next;
     int rc;
 };
 
+static int warp_plane_cells_bilinear_range(const u8 *src, u8 *dst, const u8 *depth,
+                                           u32 width, u32 height, u32 src_stride,
+                                           u32 dst_stride, u32 depth_width,
+                                           u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 2);
+}
+
+/* Dynamic scheduling: workers take SEGMENT_ROWS depth rows at a time from a
+ * shared counter, so a core busy with Pilot's own threads does not hold up
+ * the frame. [begin, end) bounds the depth rows this job set covers. */
+#define SEGMENT_ROWS 6
 static void *segment_worker(void *arg) {
     struct segment_job *j = arg;
     j->rc = 0;
-    for (u32 channel = 0; channel < 3; ++channel) {
-        j->rc = warp_plane_cells_smooth_range(j->src[channel], j->dst[channel],
-                                        j->depth, j->width[channel],
-                                        j->height[channel], j->src_stride[channel],
-                                        j->dst_stride[channel], j->depth_width,
-                                        j->depth_height, j->begin, j->end, j->fractional_bits);
-        if (j->rc) break;
+    for (;;) {
+        u32 chunk = __atomic_fetch_add(j->next, 1, __ATOMIC_RELAXED);
+        u32 first = j->begin + chunk * SEGMENT_ROWS;
+        if (first >= j->end) break;
+        u32 last = first + SEGMENT_ROWS < j->end ? first + SEGMENT_ROWS : j->end;
+        for (u32 channel = 0; channel < 3; ++channel) {
+            int rc = warp_plane_cells_bilinear_range(j->src[channel], j->dst[channel],
+                                            j->depth, j->width[channel],
+                                            j->height[channel], j->src_stride[channel],
+                                            j->dst_stride[channel], j->depth_width,
+                                            j->depth_height, first, last, j->fractional_bits);
+            if (rc && !j->rc) j->rc = rc;
+        }
     }
     return NULL;
 }
@@ -441,12 +481,12 @@ static int process_frame(const struct real3d_frame *f) {
     if (!side_by_side && chroma_half && f->width == 1920 && f->height == 1080) {
         /* Four independent depth-row segments on the four Cortex-A53 cores. */
         struct segment_job jobs[4];
+        u32 next_chunk = 0;
         for (u32 i = 0; i < 4; ++i) {
             jobs[i] = (struct segment_job){
                 .depth = z, .depth_width = f->depth_width,
                 .depth_height = depth_height, .fractional_bits = f->fractional_bits,
-                .begin = depth_height * i / 4,
-                .end = depth_height * (i + 1) / 4, .rc = 0,
+                .begin = 0, .end = depth_height, .next = &next_chunk, .rc = 0,
             };
             for (u32 channel = 0; channel < 3; ++channel) {
                 jobs[i].src[channel] = source[channel];
@@ -603,4 +643,13 @@ int real3d_warp_cells_smooth_range_for_test(const u8 *src, u8 *dst, const u8 *de
     return warp_plane_cells_smooth_range(src, dst, depth, width, height,
                                          src_stride, dst_stride, depth_width,
                                          depth_height, begin, end, fractional_bits);
+}
+
+int real3d_warp_cells_bilinear_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                                              u32 width, u32 height, u32 src_stride,
+                                              u32 dst_stride, u32 depth_width,
+                                              u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_bilinear_range(src, dst, depth, width, height,
+                                           src_stride, dst_stride, depth_width,
+                                           depth_height, begin, end, fractional_bits);
 }
