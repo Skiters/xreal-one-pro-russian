@@ -79,16 +79,16 @@ Measured on X1112011 with perf1/EXP144: AI HDR autotune chose compact
 
 Same adapter, plus three exact, asserted edits (listed in the BIN manifest):
 
-1. **Display mode «Игра — 144 Гц» instead of «Кино».** One instruction in
-   `libnr_osd.so` (0xf20d0, `mov w7,#4` → `mov w7,#5`): the Movie row of the
+1. **Display mode «Игровой» instead of «Насыщенный».** One instruction in
+   `libnr_osd.so` (0xf2048, `mov w7,#2` → `mov w7,#5`): the Vivid row of the
    display-mode list now selects the vendor's hidden *game* mode, which
    requests EDID `1920_1080_144` and maps it to a 144 Hz OLED timing. Pilot's
    separate overclock function is a stub that always reports "unsupported",
    so this is the only route. Whether the One Pro panel runs 144 Hz is
    **unverified**; the OSD has a vendor fallback screen for the game mode.
 2. The row is renamed in both Russian columns of `osd_language.csv`
-   («Кино» → «Игра — 144 Гц»), the same technique as the Russian-for-Polish
-   swap. Movie mode is not reachable in this variant.
+   («Насыщенный» → «Игровой»), the same technique as the Russian-for-Polish
+   swap. Vivid mode is not reachable in this variant; Movie is unchanged.
 3. AI HDR and Reading request **60 Hz** instead of 90 Hz from the source,
    because their frames are processed on the CPU.
 
