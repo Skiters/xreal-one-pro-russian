@@ -75,6 +75,7 @@ def frames(rng, width, height):
 def test(path, bin_path):
     m = Machine(path)
     cube_ptr, dense, compact, compact2 = DATA, DATA + 0x10000, DATA + 0x500000, DATA + 0x5c0000
+    tetra = DATA + 0x640000
     dense_size, _ = m.call('xreal_rgb_table_bytes')
     compact_size, _ = m.call('xreal_compact_table_bytes')
     assert compact_size == (17*17*256 + 512)*4 and compact_size < 0x500000 - 0x10000
@@ -98,6 +99,7 @@ def test(path, bin_path):
                           17*i//4, 17*(i+1)//4)[0] == 0
             assert m.call('xreal_build_compact2_table_range', cube_ptr, compact2,
                           17*i//4, 17*(i+1)//4)[0] == 0
+        assert m.call('xreal_build_tetra_table', cube_ptr, tetra)[0] == 0
         assert bytes(m.u.mem_read(compact - 64, 64)) == guard
         assert bytes(m.u.mem_read(compact + compact_size, 64)) == guard
         for kind, pixels in frames(rng, width, height).items():
@@ -109,7 +111,8 @@ def test(path, bin_path):
             outputs, counts = [], []
             for kernel, table in (('xreal_full_rgb_lut', dense), ('xreal_compact_rgb_lut', compact),
                                   ('xreal_compact2_rgb_lut', compact2),
-                                  ('xreal_compact_pf_rgb_lut', compact)):
+                                  ('xreal_compact_pf_rgb_lut', compact),
+                                  ('xreal_tetra_rgb_lut', tetra)):
                 for ptr, data in zip(planes, raw):
                     m.u.mem_write(ptr, bytes(data))
                 rc, count = m.call(kernel, table, *planes, *pitches, width, height)
@@ -129,12 +132,21 @@ def test(path, bin_path):
             assert error <= 1, (name, kind, error)
             assert outputs[2] == outputs[1], (name, kind, 'compact2 differs from compact')
             assert outputs[3] == outputs[1], (name, kind, 'compact_pf differs from compact')
+            tetra_error = 0
+            for i, rgb in enumerate(pixels):
+                y, x = divmod(i, width)
+                out = [outputs[4][c][y*pitches[c]+x] for c in range(3)]
+                tetra_error = max(tetra_error, max(abs(a-b) for a, b in zip(out, reference(cube, rgb))))
+            if name.endswith('.cube'):
+                assert tetra_error <= 3, (name, kind, tetra_error)
             report.setdefault(name, {})[kind] = {
                 'max_error_vs_float': error, 'max_diff_vs_dense': diff,
                 'dense_instructions_per_pixel': round(counts[0]/(width*height), 2),
                 'compact_instructions_per_pixel': round(counts[1]/(width*height), 2),
                 'compact2_instructions_per_pixel': round(counts[2]/(width*height), 2),
-                'compact_pf_instructions_per_pixel': round(counts[3]/(width*height), 2)}
+                'compact_pf_instructions_per_pixel': round(counts[3]/(width*height), 2),
+                'tetra_instructions_per_pixel': round(counts[4]/(width*height), 2),
+                'tetra_max_error_vs_float': tetra_error}
     result = {'library': str(path), 'table_bytes': {'dense': dense_size, 'compact': compact_size},
               'cubes': report,
               'limitation': 'Executed ARM64 instructions in Unicorn, not A53 cycles; cache and '

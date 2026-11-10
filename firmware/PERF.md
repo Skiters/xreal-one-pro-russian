@@ -94,6 +94,16 @@ the real A53, and the same compact kernel ran slower than in the perf1 run
   centres, so slanted edges no longer step in 4-pixel cells. Constant depth
   gives byte-identical output; an independent per-pixel oracle covers it.
 
+## perf4
+
+- **AI HDR tetrahedral kernel** as a third autotune candidate: the 17^3 cube
+  itself (19.7 KiB, fits each core's L1) instead of the 289 KiB compact table
+  in the shared L2; four nodes per pixel, weights from the sorted fractions,
+  exact integer arithmetic (one rounding). Not bit-identical to trilinear: on
+  the vendor AI HDR cube 75.4% of colours are equal, 24.6% differ by 1 level,
+  0.04% by 2, 0.001% by 3 (saturated violet); Movie stays within 1 level.
+  Log line `CPU perf4: autotune compact… compact_pf… tetra… choice=…`.
+
 ## Variant `-HDR60` (opt-in)
 
 Same adapter; AI HDR and Reading request **60 Hz** instead of 90 Hz from the

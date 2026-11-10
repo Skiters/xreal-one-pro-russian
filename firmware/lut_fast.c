@@ -329,3 +329,97 @@ int xreal_compact2_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
     }
     return 0;
 }
+
+/* Tetrahedral interpolation (perf4). The 17^3 cube itself, one u32 per node
+ * (R | G<<8 | B<<16, 8-bit values): 19.7 KiB, resident in each core's L1
+ * instead of a 289 KiB table in the shared L2. Four nodes per pixel, weights
+ * are differences of the sorted fractions (exact /255 units), so each
+ * channel is sum(w*node) <= 65025 and is computed exactly, then rounded.
+ * Output equals exact tetrahedral interpolation of the cube. Versus the
+ * trilinear reference on the vendor cubes (86^3 grid): AI HDR 75.4% equal,
+ * 24.6% 1 level, 0.04% 2, 0.001% 3 (saturated violet); Movie <= 1 level. Three 256-word axis maps follow the
+ * nodes: (node offset << 8) | fraction. */
+#define TETRA_NODES 4913U
+#define TETRA_G 17U
+#define TETRA_B 289U
+
+unsigned long long xreal_tetra_table_bytes(void) {
+    return (u64)(TETRA_NODES + 768U) * sizeof(u32);
+}
+
+int xreal_build_tetra_table(const u16 *cube, u32 *table) {
+    if (!cube || !table) return -22;
+    for (u32 i = 0; i < TETRA_NODES; ++i) {
+        u32 packed = 0;
+        for (u32 c = 0; c < 3; ++c) {
+            u32 v = ((u32)cube[i*3+c] + 128) >> 8;
+            packed |= (v > 255 ? 255 : v) << (8*c);
+        }
+        table[i] = packed;
+    }
+    for (u32 v = 0; v < 256; ++v) {
+        u32 lo = v*16/255, f = v*16 - lo*255;
+        if (lo == 16) { lo = 15; f = 255; }
+        table[TETRA_NODES+v] = (lo << 8) | f;
+        table[TETRA_NODES+256+v] = ((lo*TETRA_G) << 8) | f;
+        table[TETRA_NODES+512+v] = ((lo*TETRA_B) << 8) | f;
+    }
+    return 0;
+}
+
+static inline __attribute__((always_inline))
+void tetra_pixel(const u32 *table, const u32 *rmap, const u32 *gmap, const u32 *bmap,
+                 u8 *rp, u8 *gp, u8 *bp) {
+    u32 mr = rmap[*rp], mg = gmap[*gp], mb = bmap[*bp];
+    u32 base = (mr >> 8) + (mg >> 8) + (mb >> 8);
+    u32 f1 = mr & 255, s1 = 1, f2 = mg & 255, s2 = TETRA_G, f3 = mb & 255, s3 = TETRA_B, t;
+    /* Three compare-exchanges, written for csel; ties carry zero weight. */
+    if (f2 > f1) { t = f1; f1 = f2; f2 = t; t = s1; s1 = s2; s2 = t; }
+    if (f3 > f2) { t = f2; f2 = f3; f3 = t; t = s2; s2 = s3; s3 = t; }
+    if (f2 > f1) { t = f1; f1 = f2; f2 = t; t = s1; s1 = s2; s2 = t; }
+    const u32 *e = table + base;
+    u32 n0 = e[0], na = e[s1], nb = e[s1+s2], n1 = e[1+TETRA_G+TETRA_B];
+    u32 w0 = 255-f1, w1 = f1-f2, w2 = f2-f3, w3 = f3;
+    /* R and B in 16-bit fields of one register, G separately; no carries. */
+    u32 rb = w0*(n0 & 0xff00ffU) + w1*(na & 0xff00ffU) + w2*(nb & 0xff00ffU) + w3*(n1 & 0xff00ffU);
+    u32 g = w0*((n0>>8)&255) + w1*((na>>8)&255) + w2*((nb>>8)&255) + w3*((n1>>8)&255);
+    /* round(x/255) for x <= 65025: (x+128 + ((x+128)>>8)) >> 8, per field. */
+    rb += 0x00800080U; rb += (rb >> 8) & 0x00ff00ffU;
+    g += 128; g += g >> 8;
+    *rp = (u8)(rb >> 8); *gp = (u8)(g >> 8); *bp = (u8)(rb >> 24);
+}
+
+int xreal_tetra_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
+                        u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    if (!table || !r || !g || !b || !width || !height ||
+        width>1920 || height>1080 || rs<width || gs<width || bs<width ||
+        rs>4096 || gs>4096 || bs>4096) return -22;
+    const u32 *rmap = table + TETRA_NODES, *gmap = rmap + 256, *bmap = gmap + 256;
+    for (u32 y = 0; y < height; ++y) {
+        u8 *rp = r+(u64)y*rs, *gp = g+(u64)y*gs, *bp = b+(u64)y*bs;
+        u32 last_r = 0, last_g = 0, last_b = 0, out_r = 0, out_g = 0, out_b = 0;
+        int have_last = 0;
+        u32 x = 0;
+        for (; x+4 <= width; x += 4) {
+            u32 kr, kg, kb;
+            __builtin_memcpy(&kr, rp+x, 4);
+            __builtin_memcpy(&kg, gp+x, 4);
+            __builtin_memcpy(&kb, bp+x, 4);
+            if (have_last && kr == last_r && kg == last_g && kb == last_b) {
+                __builtin_memcpy(rp+x, &out_r, 4);
+                __builtin_memcpy(gp+x, &out_g, 4);
+                __builtin_memcpy(bp+x, &out_b, 4);
+                continue;
+            }
+            for (u32 lane = 0; lane < 4; ++lane)
+                tetra_pixel(table, rmap, gmap, bmap, rp+x+lane, gp+x+lane, bp+x+lane);
+            last_r = kr; last_g = kg; last_b = kb; have_last = 1;
+            __builtin_memcpy(&out_r, rp+x, 4);
+            __builtin_memcpy(&out_g, gp+x, 4);
+            __builtin_memcpy(&out_b, bp+x, 4);
+        }
+        for (; x < width; ++x)
+            tetra_pixel(table, rmap, gmap, bmap, rp+x, gp+x, bp+x);
+    }
+    return 0;
+}

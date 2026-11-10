@@ -214,7 +214,7 @@ def build(args):
         verification='perf candidate built from rc7; physical mode/performance tests required',
         perf={'base_bin_sha256': RC7_SHA, 'base_release': original['release'],
               'changed_files': [ADAPTER, MANIFEST, CHECKSUMS],
-              'aihdr': 'compact 289 KiB table; autotune compact vs compact+prefetch; dynamic row scheduling; dense only as fallback',
+              'aihdr': 'autotune compact (289 KiB) vs compact+prefetch vs tetrahedral (19.7 KiB); dynamic row scheduling; dense only as fallback',
               'real3d_proplus': 'vectorized warp, bilinear depth-displacement interpolation, dynamic row scheduling',
               'menu_and_osd': 'unchanged rc7 (compare_ui.c and patched libnr_osd.so)',
               'abi': abi_report})
