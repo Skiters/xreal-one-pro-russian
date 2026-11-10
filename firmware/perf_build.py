@@ -82,7 +82,7 @@ def experimental(files):
     from ui_fast import apply as ui_fast_apply
     before = set(files)
     ui = ui_fast_apply(files, 'one-pro')  # rewrites CONFIG after the 60 Hz edit
-    removed = sorted(before - set(files))
+    removed = sorted(n for n in before - set(files) if not n.endswith('/'))  # files, not directory entries
     edits.append('ui_fast (upstream): OSD timers 30 -> 16 ms, OSD logs off, '
                  f'boot_wait_time1 0.25 s, removed {len(removed)} ASUS files')
     validate_config(files[CONFIG], CONFIG)
