@@ -114,3 +114,98 @@ Run `python firmware/build_1s.py --stock <official-1s.bin> --reference <original
 All three inputs are hash-pinned. The original 1S Pilot must match every file of the reference stock ZIP. Only the CSV, two TTFs and embedded-font OSD are copied from the approved translation. Checksums and the 1S target descriptor are regenerated; every other vendor file is retained byte-for-byte. The builder never accesses USB. See [compatibility evidence](../installer/compatibility.md).
 
 For the 0.7.0 release the One Pro asset is a copy of rc7, SHA256 `721e08d0828e116ad18d26168d43a5fc9788ba3ce52e0b34a7c234159b5bde43`; internal rc7 provenance is retained. Rebuilding with current version/source provenance produces different bytes and must not be described as the same hardware-tested payload.
+
+## Local UI performance candidate (One Pro only)
+
+Add `--ui-fast --model one-pro --compare-onepro-warp` to the pinned build
+command and use a separate output directory. The BIN name ends with
+`-UI-FAST-LOCAL`; this does not replace the public firmware asset.
+
+The opt-in changes are:
+
+1. Change the exact rc7 OSD refresh and animation timers from 30 to 16 ms;
+   preserve full screen-load transition durations. Input polling and other LVGL
+   timers are unchanged. A 16 ms timer is a scheduling target, not measured FPS.
+2. Disable normal action/interface logs and sample HDR processing times every
+   1800 instead of 30 frames. Error paths and initialization logs remain.
+3. Cache Real3D row geometry across unchanged highlights. List, widget, mode
+   or availability changes invalidate it; native registration forces layout.
+4. Reduce the first boot wait from 1 to 0.25 seconds. Preserve the separate
+   7-second video-readiness timeout, watchdog and onboarding.
+5. Omit the two ASUS OSD libraries and `resource_asus/` from this model's BIN.
+   Neither library was mapped by the running One Pro Pilot process. OTA may
+   retain old unlisted files; package reduction does not prove RAM savings.
+
+`ui_fast.py` checks the entire input OSD hash and each patched instruction.
+The candidate retains the current panel, EDID, algorithms and translations.
+The 2026-10-21 candidate is 73,347,963 bytes versus 99,742,055 bytes for the
+same build without package pruning (about 26.5% less). Expected readback: 54
+files. Physical boot time, menu smoothness, CPU cost and every operating mode
+still require testing on a video source. The front USB connection alone cannot
+validate display performance.
+
+Validation commands (after the normal build inputs are available):
+
+```text
+python firmware/tests/test_ui_fast.py <UI-FAST-LOCAL.bin>
+python firmware/tests/test_compare_ui.py <libxreal_cpu_adapter.so>
+```
+
+The first test uses local baseline evidence at `outputs/ui-performance-audit/`
+and `outputs/ui-fast-test/device-before/`; these device artifacts are not
+published. It executes the patched ARM64 instructions and verifies config scope,
+model rejection, unknown-ELF rejection and the complete package checksums.
+The second executes native row construction and tests cache invalidation and
+forced geometry repair after navigation registration. Frame-bound regression
+checks also passed with `REAL3D_LIB` pointing at the candidate adapter.
+
+## Exact-output Real3D optimization — 2026-11-03, local candidate
+
+The Pro+ CPU warp now interpolates four neighbouring luma pixels using ARM64
+vector lanes and two chroma pixels using independent packed integer lanes.
+Each group shares a depth sample and fractional weight. The Q5 weights,
+rounding, clamped edges, depth scale, frame dimensions and worker count are
+unchanged. Integer shifts retain the direct-copy path. Source loads remain
+within the visible row; no extra frame buffer, HAL/cache changes, dropped
+frames or lower-resolution depth map are introduced. The native One Pro mesh
+and AI HDR kernel are unchanged.
+
+The retained rc6 device log had 36 successful Pro+ CPU samples: median compute
+19.668 ms, mapping 1.179 ms and flush 0.559 ms. This historical log identifies
+the compute bottleneck; it is not a measurement of this new build. Its local
+SHA256 is `0edece34bc235bba7f5002e4c9cd17d22808533e48d421b9406c20fb0b550c76`.
+
+Against the preceding menu-spacing candidate (source revision `28ffc36`),
+30 deterministic full-width ARM64 comparisons and 90 worker partitions have
+byte-identical output, including stride padding. An independent geometry
+oracle also passes all 1,536 combinations of depth value, Q2/Q3/Q4 encoding
+and luma/chroma scale. On mixed-depth inputs, executed instruction counts
+fall 65.10–68.72% for luma and 41.22–42.64% for chroma. Zero/integer-depth
+cases are essentially unchanged (up to 0.19% more instructions at clamped
+edges). Instruction counts are **not clock cycles or measured FPS**; memory,
+NEON costs, NPU processing and scheduling still require hardware measurement.
+
+The UI option also restores the original screen transition durations that
+the October candidate halved. Only the two refresh/animation timer
+instructions are patched in OSD; transitions keep their full duration and
+effect. The native ARM64 UI regression and all 100 frame-descriptor cases
+pass. Public release assets have not been replaced and this candidate has
+not been flashed or visually tested on the glasses.
+
+Reproduce the instruction/output comparison after building both adapters:
+
+```text
+python firmware/tests/compare_warp_work.py <before.so> <after.so> --output <report.json>
+```
+
+This measures just the Pro+ CPU warp, so it does not establish faster cold
+boot, faster SDR-only menus or a performance improvement on One/1S.
+
+Installed on One Pro X1112010 on 2026-10-21. All 54 files were read back and
+matched after USB export retries following restart; no second firmware write
+was needed. The new Pilot process mapped the adapter and OSD. Build ID:
+`ed6357d6311279df4ec5da9510f9a9d24d06712248cfd0afd0b6ef7b1d51ed10`.
+BIN SHA256: `81a1e330aa99da478eb995520f6d92e877af22e8271dacfab01eab4b6933324a`.
+A full pre-update Pilot directory backup and install/readback reports are kept
+locally under `outputs/ui-fast-test/`. This is installation verification;
+visual/performance acceptance is still pending. Public release BINs are unchanged.

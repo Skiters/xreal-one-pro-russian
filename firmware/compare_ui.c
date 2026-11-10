@@ -53,25 +53,66 @@ static void make_item(U source) {
     invoke(0x28eb08,widgets[0x308/8],translated,0,0);
     item_ready=1;
 }
-static void layout(U list) {
+#ifdef XREAL_UI_FAST
+static U layout_list, layout_begin, layout_end, layout_widgets[5][5];
+static unsigned layout_modes[5], layout_available[5];
+#endif
+/* Five equal single-line rows occupy 404 px inside the 410 px viewport.
+ * Preserve the native 54 px title box: shrinking it to 38 clipped the font.
+ * Descriptions remain in the language table; this selector hides its duplicate
+ * subtitles instead of squeezing two text boxes into a 72 px row.
+ */
+enum { ROW_HEIGHT=76, ROW_STEP=82, ROW_TOP=3 };
+static int hidden(U item) {
+    U box=pointer(item,0x38);
+    return !box || invoke(0x262008,box,1,0,0);
+}
+static void row_layout(U item, unsigned index) {
+    U box=pointer(item,0x38), title=pointer(item,0);
+    invoke(0x263880,box,0,ROW_TOP+index*ROW_STEP,0);
+    invoke(0x263a30,box,760,ROW_HEIGHT,0);
+    if (title) {
+        invoke(0x263880,title,142,11,0);
+        invoke(0x263a30,title,520,54,0);
+        invoke(0x28eda0,title,4,0,0); /* LV_LABEL_LONG_CLIP, no marquee */
+    }
+    if (pointer(item,0x18)) {
+        invoke(0x263880,pointer(item,0x18),52,8,0);
+        invoke(0x263a30,pointer(item,0x18),80,60,0);
+    }
+    if (pointer(item,0x20)) {
+        invoke(0x263880,pointer(item,0x20),26,30,0);
+        invoke(0x263a30,pointer(item,0x20),16,16,0);
+    }
+    if (pointer(item,0x10)) invoke(0x261de8,pointer(item,0x10),1,0,0);
+}
+static void layout(U list, int force) {
     U begin=pointer(list,0x10), end=pointer(list,0x18);
     /* Native navigation excludes unavailable/hidden modes (for example SBS
      * for some inputs). Real3D rows must remain separate in that case too. */
     if (end<begin || end-begin>5*0x120 || (end-begin)%0x120) return;
-    unsigned index=0;
-    for (U it=begin;it<end;it+=0x120,++index) {
-        U box=pointer(it,0x38);
-        invoke(0x263880,box,0,index*76,0);
-        invoke(0x263a30,box,760,72,0);
-        invoke(0x263880,pointer(it,0),142,mode(it) ? 4 : 14,0);
-        invoke(0x263a30,pointer(it,0),520,mode(it) ? 38 : 44,0);
-        if (pointer(it,0x18))
-            invoke(0x263880,pointer(it,0x18),52,6,0);
-        if (pointer(it,0x10)) {
-            invoke(0x263880,pointer(it,0x10),142,42,0);
-            invoke(0x263a30,pointer(it,0x10),520,26,0);
+#ifdef XREAL_UI_FAST
+    const U offsets[5]={0,0x10,0x18,0x20,0x38};
+    int same=!force && list==layout_list && begin==layout_begin && end==layout_end;
+    unsigned count=0;
+    for (U it=begin;it<end;it+=0x120,++count) {
+        for (unsigned j=0;j<5;++j) {
+            U value=pointer(it,offsets[j]);
+            if (layout_widgets[count][j]!=value) same=0;
+            layout_widgets[count][j]=value;
         }
+        unsigned available=((unsigned)*(B *)(it+0xd3)<<1) | hidden(it);
+        if (layout_modes[count]!=mode(it) || layout_available[count]!=available) same=0;
+        layout_modes[count]=mode(it); layout_available[count]=available;
     }
+    if (same) return;
+    layout_list=list; layout_begin=begin; layout_end=end;
+#else
+    (void)force;
+#endif
+    unsigned index=0;
+    for (U it=begin;it<end;it+=0x120)
+        if (!hidden(it)) row_layout(it,index++);
 }
 __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
     osd=r[16];
@@ -80,6 +121,21 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
         r[0]=invoke(0x26e2a8,r[0],r[1],r[2],r[3]);
         widgets[0x268/8]=pointer(r[19],0x268);
         xreal_clone_row(widgets,r[20],r[21],r[22],r[23],r[24],osd);
+        /* The native vertical tabview (UI +0x270) has four selector cells.
+         * Registration caps the rebuilt list at its tab count (861b8).
+         * A fifth visual row alone leaves 410/4 navigation cells behind it.
+         * Add a genuine fifth tab through the vendor API, never just alter
+         * the count field: the tab map and content container must also exist.
+         */
+        U tabs=pointer(r[19],0x270);
+        if (tabs && invoke(0x861b8,tabs,0,0,0)==4) {
+            /* Vendor tabs use whitespace titles behind the separate labels. */
+            U page=invoke(0x27b688,tabs,(U)"        ",0,0);
+            if (page) {
+                U label=invoke(0x28db28,page,0,0,0);
+                invoke(0x28eb08,label,(U)"",0,0);
+            }
+        }
         row_ready=1;
     } else if (site==0xf9aa8) {
         U list=r[0], item=r[1];
@@ -91,32 +147,42 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
         r[0]=invoke(0x10c338,list,item,0,0);
         if (mode(item)==3 && item_ready)
             invoke(0x10c338,list,(U)extra,0,0);
-        layout(list);
+        layout(list,1);
     } else if (site==0xf9bc0) {
         U *old=(U *)r[1], entries[5], n=0;
-        if (item_ready && old[1]-old[0]==4*8) {
+        if (item_ready && old[1]>=old[0] && old[1]-old[0]<=4*8 &&
+            (old[1]-old[0])%8==0) {
+            int added=0;
             for (U p=old[0];p<old[1];p+=8) {
                 U it=*(U *)p;
                 entries[n++]=it;
-                if (mode(it)==3) {
+                if (mode(it)==3 && !added) {
                     entries[n++]=(U)extra;
+                    added=1;
                     /* Match the native Real3D availability check. */
                     U hidden=invoke(0x262008,pointer(it,0x38),1,0,0);
                     invoke(hidden ? 0x261de8 : 0x261ee8,
                            pointer((U)extra,0x38),1,0,0);
                 }
             }
-            if (n==5) {
-                U vector[3]={(U)entries,(U)(entries+5),(U)(entries+5)};
+            if (added) {
+                /* Registration snapshots source geometry before reparenting.
+                 * Normalize the persistent source rows as well as list copies.
+                 */
+                unsigned visible=0;
+                for (U i=0;i<n;++i)
+                    if (!hidden(entries[i])) row_layout(entries[i],visible++);
+                U vector[3]={(U)entries,(U)(entries+n),(U)(entries+n)};
                 r[0]=invoke(0x10cc28,r[0],(U)vector,r[2],r[3]);
                 /* Registration reparents rows and restores cached coordinates.
                  * The clone initially has the same y as the original. Apply
                  * the five-row layout AFTER this native repositioning. */
-                layout(osd+0x238bf50);
+                layout(osd+0x238bf50,1);
                 return;
             }
         }
         r[0]=invoke(0x10cc28,r[0],r[1],r[2],r[3]);
+        layout(osd+0x238bf50,1);
     } else if (site==0xf75c8) {
         r[0]=invoke(0xf3070,r[0],(U)"Real3D One Pro",0,0);
     } else {
@@ -127,7 +193,7 @@ __attribute__((visibility("hidden"))) void xreal_ui_call(U *r) {
         if (item_ready && list==osd+0x238bf50 && r[1]==3)
             r[1]=xreal_compare_algorithm()==1 ? 3 : 4;
         r[0]=invoke(0x10a5f8,r[0],r[1],r[2],r[3]);
-        if (item_ready && list==osd+0x238bf50) layout(list);
+        if (item_ready && list==osd+0x238bf50) layout(list,0);
     }
 }
 #endif
