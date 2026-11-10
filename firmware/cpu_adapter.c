@@ -29,28 +29,20 @@ extern int xreal_full_rgb_lut(const u64 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern u64 xreal_compact_table_bytes(void);
 extern int xreal_build_compact_table_range(const u16 *,u32 *,u32,u32);
 extern int xreal_compact_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
+extern int xreal_compact16_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 /* Kernels: 0 dense (rc7 table, only when the compact table cannot be built),
- * 1 compact. perf4 autotune on the device (video): compact 23.4 ms, compact
- * with prefetch 33.7, tetrahedral 33.4; earlier dense and compact2 also lost.
- * The alternatives stay in lut_fast.c (tested) but are no longer tuned, so
- * the first seconds of AI HDR no longer run slow kernels. */
+ * 1 compact, 2 compact16 (same table, 16-bit NEON arithmetic, within one
+ * level of the cube). perf4 on video: compact 23.4 ms beat compact+prefetch
+ * 33.7 and tetrahedral 33.4; those stay in lut_fast.c but are not used.
+ * After LUT init, kernels 1 and 2 alternate for TUNE frames each and the
+ * lower median wins (short, so the first second stays smooth). */
+#define TUNE 10
 static u32 *compact;
 static int choice=-1;
-/* Diagnostic: a sparse signature of each input frame (before conversion),
- * compared with the previous one, to measure how many frames the source
- * repeats (e.g. 24/30 fps video in a 60 Hz signal). Logged every 300 frames.
- * Sampling can miss tiny changes; the count is an estimate only. */
-static u64 last_signature;
-static u32 repeats, signature_us_max;
-static u64 signature(u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
-    u64 x=0xcbf29ce484222325ULL;
-    for(u32 c=0;c<3;c++)
-        for(u32 y=3;y<h;y+=8)
-            for(u32 col=(y*37)%160;col+8<=w;col+=160) {
-                u64 v;__builtin_memcpy(&v,planes[c]+(u64)y*strides[c]+col,8);
-                x=(x^v)*0x100000001b3ULL;
-            }
-    return x;
+static u32 tune[3][TUNE], tuned[3];
+static u32 median(u32 *v,u32 n) {
+    for(u32 i=1;i<n;i++)for(u32 j=i;j && v[j-1]>v[j];j--){u32 x=v[j];v[j]=v[j-1];v[j-1]=x;}
+    return v[n/2];
 }
 static void trace(const char *stage,u64 p,u32 n,long value) {
     char line[200];
@@ -120,6 +112,8 @@ struct rgb_job {struct rgb_frame *f;int rc;};
 static int rgb_rows(const struct rgb_frame *f,u32 begin,u32 rows) {
     u8 *p[3];
     for(u32 c=0;c<3;c++)p[c]=f->planes[c]+(u64)begin*f->strides[c];
+    if(f->kernel==2)
+        return xreal_compact16_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     if(f->kernel==1)
         return xreal_compact_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     return xreal_full_rgb_lut(f->table,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
@@ -163,7 +157,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;
-        choice=-1;last_signature=0;repeats=0;signature_us_max=0;
+        choice=-1;tuned[1]=tuned[2]=0;
         int rc=0;
         u32 *small=malloc(xreal_compact_table_bytes());
         int crc=small ? 0 : -12;
@@ -173,7 +167,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
             xreal_parallel_run(compact_worker,cjobs,sizeof(cjobs[0]),4);
             for(u32 i=0;i<4;i++)if(cjobs[i].rc)crc=cjobs[i].rc;
         }
-        if(!crc){compact=small;choice=1;}
+        if(!crc)compact=small;
         else {
             /* Compact table unavailable: rc7 behaviour with the dense table. */
             free(small);record("perf: compact table unavailable, dense only",crc);
@@ -197,7 +191,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         choice=-1;return result(p,0);
     }
     if(strcmp(call->name,"ArArmlut3dProcessRgbToYuv"))return xreal_real3d_rpc(core,call,sync);
-    if(call->length!=52 || choice<0 || (choice==0 ? !dense : !compact))return -22;
+    if(call->length!=52 || (choice==0 ? !dense : !compact))return -22;
     const struct frame_args *a=call->args;
     if(!a->width || !a->height || a->width>1920 || a->height>1080 ||
        (a->width&1)||(a->height&1)||(a->strides[0]&1)||!valid(a->result,64))return -22;
@@ -210,19 +204,26 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         for(u32 j=0;j<i;j++) if(a->planes[i]<a->planes[j]+sizes[j] && a->planes[j]<a->planes[i]+sizes[i])return -22;
     }
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
-    struct timespec before,signed_at,converted,flushed;
+    struct timespec before,converted,flushed;
+    int kernel=choice>=0 ? choice : 1+(int)(frame_count%2);
     clock_gettime(1,&before);
-    u64 sig=signature(planes,a->strides,a->width,a->height);
-    if(frame_count && sig==last_signature)repeats++;
-    last_signature=sig;
-    clock_gettime(1,&signed_at);
-    {
-        long us=(signed_at.sec-before.sec)*1000000+(signed_at.nsec-before.nsec)/1000;
-        if(us>(long)signature_us_max)signature_us_max=(u32)us;
-    }
-    before=signed_at;
-    rc=rgb_parallel(dense,compact,choice,planes,a->strides,a->width,a->height);
+    rc=rgb_parallel(dense,compact,kernel,planes,a->strides,a->width,a->height);
     clock_gettime(1,&converted);
+    if(!rc && choice<0) {
+        long us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
+        if(tuned[kernel]<TUNE)tune[kernel][tuned[kernel]++]=(u32)(us>0 ? us : 0);
+        if(tuned[1]>=TUNE && tuned[2]>=TUNE) {
+            u32 m1=median(tune[1],TUNE),m2=median(tune[2],TUNE);
+            choice=m2<m1 ? 2 : 1;
+            char line[200];
+            int n=snprintf(line,sizeof(line),"CPU perf6: autotune compact_median_us=%u compact16_median_us=%u choice=%s\n",
+                           m1,m2,choice==2 ? "compact16" : "compact");
+            if(n>0 && n<(int)sizeof(line)) {
+                int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
+                if(fd>=0){write(fd,line,(u64)n);close(fd);}
+            }
+        }
+    }
     if(!rc && sizes[0]>0x100000) {
         /* Vendor HAL uses a global cache-flush ioctl for sizes above 1 MiB.
          * All three RGB planes have been modified before this call. */
@@ -246,9 +247,6 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         trace("frame timestamp microseconds",0,frame_count,
               flushed.sec*1000000+flushed.nsec/1000);
         if(frame_count%300==0 && frame_count) {
-            trace("perf5 repeated frames per 300",0,frame_count,(long)repeats);
-            trace("perf5 signature max microseconds",0,frame_count,(long)signature_us_max);
-            repeats=0;signature_us_max=0;
             trace("cpu0 kHz",0,frame_count,sysfs_number("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"));
         }
     }

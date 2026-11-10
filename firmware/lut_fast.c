@@ -423,3 +423,118 @@ int xreal_tetra_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
     }
     return 0;
 }
+
+/* compact16 (perf6): the compact table and lookups, 16-bit arithmetic.
+ * Each 4-pixel group extracts one channel of all four corners into two
+ * 8-lane vectors ([p00|p10] and [p01|p11]); the G lerp runs once over both
+ * B rows, then the B lerp. Lerp: a + round((b-a)*w/32768) (SQRDMULH) with
+ * w = (f*32897+64)>>8 ~ f*32768/255 (f=255 -> 32767). Error versus the cube: Q2 table
+ * <= 1/8 level, each lerp <= 1/8, final rounding 1/2: within 1 level.
+ * The portable path computes exactly the same lanes. */
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+#include <arm_neon.h>
+#endif
+
+static inline short c16_mulh(short a, short w) {  /* SQRDMULH, no saturation case */
+    return (short)(((int)a * w * 2 + 0x8000) >> 16);
+}
+static inline u32 c16_weight(u32 f) {     /* ~ f*32768/255, f=255 -> 32767 */
+    u32 w = (f * 32897U + 64U) >> 8;
+    return w - (w >> 15);
+}
+static inline u8 c16_channel(u32 p00, u32 p01, u32 p10, u32 p11, u32 shift, short wg, short wb) {
+    short a0 = (short)((p00 >> shift) & 1023), a1 = (short)((p01 >> shift) & 1023);
+    short b0 = (short)((p10 >> shift) & 1023), b1 = (short)((p11 >> shift) & 1023);
+    short g0 = (short)(a0 + c16_mulh((short)(a1 - a0), wg));
+    short g1 = (short)(b0 + c16_mulh((short)(b1 - b0), wg));
+    short v = (short)(g0 + c16_mulh((short)(g1 - g0), wb));
+    u32 out = ((u32)v + 2) >> 2;
+    return (u8)(out > 255 ? 255 : out);
+}
+
+int xreal_compact16_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
+                            u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    if (!table || !r || !g || !b || !width || !height ||
+        width>1920 || height>1080 || rs<width || gs<width || bs<width ||
+        rs>4096 || gs>4096 || bs>4096) return -22;
+    const u32 *gmap = table + COMPACT_WORDS, *bmap = gmap + 256;
+    for (u32 y = 0; y < height; ++y) {
+        u8 *rp = r+(u64)y*rs, *gp = g+(u64)y*gs, *bp = b+(u64)y*bs;
+        u32 last_r = 0, last_g = 0, last_b = 0, out_r = 0, out_g = 0, out_b = 0;
+        int have_last = 0;
+        u32 x = 0;
+        for (; x+4 <= width; x += 4) {
+            u32 kr, kg, kb;
+            __builtin_memcpy(&kr, rp+x, 4);
+            __builtin_memcpy(&kg, gp+x, 4);
+            __builtin_memcpy(&kb, bp+x, 4);
+            if (have_last && kr == last_r && kg == last_g && kb == last_b) {
+                __builtin_memcpy(rp+x, &out_r, 4);
+                __builtin_memcpy(gp+x, &out_g, 4);
+                __builtin_memcpy(bp+x, &out_b, 4);
+                continue;
+            }
+            u32 c00[4], c01[4], c10[4], c11[4];
+            unsigned short wg[4], wb[4];
+            for (u32 lane = 0; lane < 4; ++lane) {
+                u32 gm = gmap[gp[x+lane]], bm = bmap[bp[x+lane]];
+                u32 index = (gm >> 8) + (bm >> 8) + rp[x+lane];
+                c00[lane] = table[index];
+                c01[lane] = table[index+COMPACT_G_STEP];
+                c10[lane] = table[index+COMPACT_B_STEP];
+                c11[lane] = table[index+COMPACT_B_STEP+COMPACT_G_STEP];
+                wg[lane] = (unsigned short)c16_weight(gm & 255);
+                wb[lane] = (unsigned short)c16_weight(bm & 255);
+            }
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+            uint32x4_t q00 = vld1q_u32(c00), q01 = vld1q_u32(c01);
+            uint32x4_t q10 = vld1q_u32(c10), q11 = vld1q_u32(c11);
+            int16x4_t vwg = vreinterpret_s16_u16(vld1_u16(wg));
+            int16x4_t vwb = vreinterpret_s16_u16(vld1_u16(wb));
+            int16x8_t wg8 = vcombine_s16(vwg, vwg);
+            uint16x8_t mask = vdupq_n_u16(1023);
+            /* lo = [p00 | p10], hi = [p01 | p11] for each channel. */
+            uint16x8_t lo_r = vandq_u16(vcombine_u16(vmovn_u32(q00), vmovn_u32(q10)), mask);
+            uint16x8_t hi_r = vandq_u16(vcombine_u16(vmovn_u32(q01), vmovn_u32(q11)), mask);
+            uint16x8_t lo_g = vandq_u16(vcombine_u16(vshrn_n_u32(q00, 10), vshrn_n_u32(q10, 10)), mask);
+            uint16x8_t hi_g = vandq_u16(vcombine_u16(vshrn_n_u32(q01, 10), vshrn_n_u32(q11, 10)), mask);
+            uint16x8_t lo_b = vshrq_n_u16(vcombine_u16(vshrn_n_u32(q00, 16), vshrn_n_u32(q10, 16)), 4);
+            uint16x8_t hi_b = vshrq_n_u16(vcombine_u16(vshrn_n_u32(q01, 16), vshrn_n_u32(q11, 16)), 4);
+            uint8x8_t res[3];
+            uint16x8_t los[3] = {lo_r, lo_g, lo_b}, his[3] = {hi_r, hi_g, hi_b};
+            for (u32 c = 0; c < 3; ++c) {
+                int16x8_t lo = vreinterpretq_s16_u16(los[c]), hi = vreinterpretq_s16_u16(his[c]);
+                int16x8_t gl = vaddq_s16(lo, vqrdmulhq_s16(vsubq_s16(hi, lo), wg8));
+                int16x4_t g0 = vget_low_s16(gl), g1 = vget_high_s16(gl);
+                int16x4_t v = vadd_s16(g0, vqrdmulh_s16(vsub_s16(g1, g0), vwb));
+                uint16x4_t o = vrshr_n_u16(vreinterpret_u16_s16(v), 2);
+                res[c] = vqmovn_u16(vcombine_u16(o, o));
+            }
+            vst1_lane_u32((uint32_t *)(void *)(rp+x), vreinterpret_u32_u8(res[0]), 0);
+            vst1_lane_u32((uint32_t *)(void *)(gp+x), vreinterpret_u32_u8(res[1]), 0);
+            vst1_lane_u32((uint32_t *)(void *)(bp+x), vreinterpret_u32_u8(res[2]), 0);
+#else
+            for (u32 lane = 0; lane < 4; ++lane) {
+                rp[x+lane] = c16_channel(c00[lane], c01[lane], c10[lane], c11[lane], 0, (short)wg[lane], (short)wb[lane]);
+                gp[x+lane] = c16_channel(c00[lane], c01[lane], c10[lane], c11[lane], 10, (short)wg[lane], (short)wb[lane]);
+                bp[x+lane] = c16_channel(c00[lane], c01[lane], c10[lane], c11[lane], 20, (short)wg[lane], (short)wb[lane]);
+            }
+#endif
+            last_r = kr; last_g = kg; last_b = kb; have_last = 1;
+            __builtin_memcpy(&out_r, rp+x, 4);
+            __builtin_memcpy(&out_g, gp+x, 4);
+            __builtin_memcpy(&out_b, bp+x, 4);
+        }
+        for (; x < width; ++x) {
+            u32 gm = gmap[gp[x]], bm = bmap[bp[x]];
+            u32 index = (gm >> 8) + (bm >> 8) + rp[x];
+            u32 p00 = table[index], p01 = table[index+COMPACT_G_STEP];
+            u32 p10 = table[index+COMPACT_B_STEP], p11 = table[index+COMPACT_B_STEP+COMPACT_G_STEP];
+            short wg = (short)c16_weight(gm & 255), wb = (short)c16_weight(bm & 255);
+            rp[x] = c16_channel(p00, p01, p10, p11, 0, wg, wb);
+            gp[x] = c16_channel(p00, p01, p10, p11, 10, wg, wb);
+            bp[x] = c16_channel(p00, p01, p10, p11, 20, wg, wb);
+        }
+    }
+    return 0;
+}

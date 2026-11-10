@@ -112,7 +112,8 @@ def test(path, bin_path):
             for kernel, table in (('xreal_full_rgb_lut', dense), ('xreal_compact_rgb_lut', compact),
                                   ('xreal_compact2_rgb_lut', compact2),
                                   ('xreal_compact_pf_rgb_lut', compact),
-                                  ('xreal_tetra_rgb_lut', tetra)):
+                                  ('xreal_tetra_rgb_lut', tetra),
+                                  ('xreal_compact16_rgb_lut', compact)):
                 for ptr, data in zip(planes, raw):
                     m.u.mem_write(ptr, bytes(data))
                 rc, count = m.call(kernel, table, *planes, *pitches, width, height)
@@ -139,6 +140,12 @@ def test(path, bin_path):
                 tetra_error = max(tetra_error, max(abs(a-b) for a, b in zip(out, reference(cube, rgb))))
             if name.endswith('.cube'):
                 assert tetra_error <= 3, (name, kind, tetra_error)
+            c16_error = 0
+            for i, rgb in enumerate(pixels):
+                y, x = divmod(i, width)
+                out = [outputs[5][c][y*pitches[c]+x] for c in range(3)]
+                c16_error = max(c16_error, max(abs(a-b) for a, b in zip(out, reference(cube, rgb))))
+            assert c16_error <= 1, (name, kind, 'compact16', c16_error)
             report.setdefault(name, {})[kind] = {
                 'max_error_vs_float': error, 'max_diff_vs_dense': diff,
                 'dense_instructions_per_pixel': round(counts[0]/(width*height), 2),
@@ -146,7 +153,9 @@ def test(path, bin_path):
                 'compact2_instructions_per_pixel': round(counts[2]/(width*height), 2),
                 'compact_pf_instructions_per_pixel': round(counts[3]/(width*height), 2),
                 'tetra_instructions_per_pixel': round(counts[4]/(width*height), 2),
-                'tetra_max_error_vs_float': tetra_error}
+                'tetra_max_error_vs_float': tetra_error,
+                'compact16_instructions_per_pixel': round(counts[5]/(width*height), 2),
+                'compact16_max_error_vs_float': c16_error}
     result = {'library': str(path), 'table_bytes': {'dense': dense_size, 'compact': compact_size},
               'cubes': report,
               'limitation': 'Executed ARM64 instructions in Unicorn, not A53 cycles; cache and '

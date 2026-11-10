@@ -14,6 +14,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('library')
     p.add_argument('--bin', type=Path)
+    p.add_argument('--dump16', help='append compact16 outputs (NEON/portable comparison)')
     args = p.parse_args()
     lib = C.CDLL(str(Path(args.library).resolve()))
     lib.xreal_rgb_table_bytes.restype = C.c_uint64
@@ -33,6 +34,8 @@ def main():
     run2.argtypes = run.argtypes
     run_pf = lib.xreal_compact_pf_rgb_lut
     run_pf.argtypes = run.argtypes
+    run16 = lib.xreal_compact16_rgb_lut
+    run16.argtypes = run.argtypes
     assert lib.xreal_compact_table_bytes() == (17*17*256+512)*4
     assert lib.xreal_compact2_table_bytes() == (17*17*256+512)*4
     table2 = (C.c_uint32*(lib.xreal_compact2_table_bytes()//4))()
@@ -67,6 +70,7 @@ def main():
         twins = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         thirds = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         fourths = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
+        fifths = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         for i, rgb in enumerate(pixels):
             y, x = divmod(i, width)
             for c in range(3):
@@ -74,12 +78,28 @@ def main():
                 twins[c][y*pitches[c]+x] = rgb[c]
                 thirds[c][y*pitches[c]+x] = rgb[c]
                 fourths[c][y*pitches[c]+x] = rgb[c]
+                fifths[c][y*pitches[c]+x] = rgb[c]
         assert run(table, *planes, *pitches, width, height) == 0
         assert dense_run(dense, *twins, *pitches, width, height) == 0
         assert run2(table2, *thirds, *pitches, width, height) == 0
         assert [bytes(x) for x in thirds] == [bytes(x) for x in planes], 'compact2 must equal compact'
         assert run_pf(table, *fourths, *pitches, width, height) == 0
         assert [bytes(x) for x in fourths] == [bytes(x) for x in planes], 'compact_pf must equal compact'
+        assert run16(table, *fifths, *pitches, width, height) == 0
+        error16 = 0
+        for i, rgb in enumerate(pixels):
+            y, x = divmod(i, width)
+            out = [fifths[c][y*pitches[c]+x] for c in range(3)]
+            error16 = max(error16, max(abs(a-b) for a, b in zip(out, reference(cube, rgb))))
+            if name == 'identity':
+                assert out == list(rgb), ('compact16 identity', rgb, out)
+        assert error16 <= 1, ('compact16', name, error16)
+        for c, s in enumerate(pitches):
+            for y in range(height):
+                assert bytes(fifths[c][y*s+width:(y+1)*s]) == bytes([171])*(s-width)
+        if args.dump16:
+            with open(args.dump16, 'ab') as f:
+                f.write(b''.join(bytes(x) for x in fifths))
         error = against_dense = 0
         for i, rgb in enumerate(pixels):
             y, x = divmod(i, width)
@@ -98,8 +118,10 @@ def main():
             assert run(table, *planes, rs, pitches[1], pitches[2], w, h) == -22
             assert run2(table2, *planes, rs, pitches[1], pitches[2], w, h) == -22
             assert run_pf(table, *planes, rs, pitches[1], pitches[2], w, h) == -22
+            assert run16(table, *planes, rs, pitches[1], pitches[2], w, h) == -22
             assert [bytes(x) for x in planes] == previous
-        report[name] = {'max_error_vs_float': error, 'max_diff_vs_dense_kernel': against_dense}
+        report[name] = {'max_error_vs_float': error, 'max_diff_vs_dense_kernel': against_dense,
+                        'compact16_max_error_vs_float': error16}
     print(json.dumps({'pixels_per_cube': width*height, 'cubes': report}))
 
 

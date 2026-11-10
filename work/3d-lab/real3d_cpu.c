@@ -3,6 +3,9 @@
  * A failed ABI/layout check leaves the existing HDR path untouched.
  */
 #include "runtime.h"
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+#include <arm_neon.h>
+#endif
 #ifdef XREAL_COMPARE_ONEPRO_WARP
 #include "onepro_warp.h"
 #endif
@@ -130,6 +133,19 @@ static void *map(u64 address, u32 bytes) {
     return p;
 }
 
+/* Destination planes are written completely (whole 64-byte lines: widths
+ * 1920/960 and strides 2048/1920/1024/960 are multiples of 64) and never
+ * read, so their cache lines need no invalidation before the warp; the
+ * flush after the warp writes them back. Unaligned layouts keep the
+ * invalidate. */
+static void *map_output(u64 address, u32 bytes, u32 stride) {
+    if ((address & 63) || (stride & 63)) return map(address, bytes);
+    if (!valid(address, bytes)) return NULL;
+    void *p = ar_hal_sys_mmap_cache(address, bytes);
+    if (!p || p == (void *)-1) return NULL;
+    return p;
+}
+
 static int set_result(u64 address, int result) {
     int *p = map(address, 64);
     if (!p) return -5;
@@ -198,6 +214,37 @@ static void sample_cell2(u8 *dst, const u8 *src, u32 frac) {
  * edges. Cells whose neighbours carry the same displacement keep the shared
  * fast path. */
 #define HFLAT 4U
+/* Four luma pixels with individual Q5 displacements: one 16-byte load and a
+ * TBL gather instead of eight byte loads. Same arithmetic as sample_q5.
+ * Returns 0 (caller falls back) when the window does not fit. */
+static inline int sample_pixels4(u8 *d, const u8 *s, u32 x, const u32 sh[4], u32 width) {
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+    u32 i0 = sh[0] >> 5, i1 = sh[1] >> 5, i2 = sh[2] >> 5, i3 = sh[3] >> 5;
+    u32 lo = i0 < i1 ? i0 : i1;
+    if (i2 < lo) lo = i2;
+    if (i3 < lo) lo = i3;
+    u32 hi = i0 > i1 ? i0 : i1;
+    if (i2 > hi) hi = i2;
+    if (i3 > hi) hi = i3;
+    u32 base = x + lo;
+    if (hi - lo + 4 > 15 || base + 16 > width) return 0;
+    u64 a = (u64)(i0 - lo) | (u64)(i1 - lo + 1) << 8 | (u64)(i2 - lo + 2) << 16 | (u64)(i3 - lo + 3) << 24;
+    uint8x8_t index = vcreate_u8(a | (a + 0x01010101ULL) << 32);
+    uint8x8_t got = vqtbl1_u8(vld1q_u8(s + base), index);
+    uint16x8_t wide = vmovl_u8(got);
+    uint16x4_t f = vcreate_u16((u64)(sh[0] & 31) | (u64)(sh[1] & 31) << 16 |
+                               (u64)(sh[2] & 31) << 32 | (u64)(sh[3] & 31) << 48);
+    uint16x4_t v = vmul_u16(vget_low_u16(wide), vsub_u16(vdup_n_u16(32), f));
+    v = vmla_u16(v, vget_high_u16(wide), f);
+    v = vshr_n_u16(vadd_u16(v, vdup_n_u16(16)), 5);
+    vst1_lane_u32((uint32_t *)(void *)d, vreinterpret_u32_u8(vmovn_u16(vcombine_u16(v, v))), 0);
+    return 1;
+#else
+    (void)d; (void)s; (void)x; (void)sh; (void)width;
+    return 0;
+#endif
+}
+
 static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 width, u32 height, u32 src_stride,
                                  u32 dst_stride, u32 depth_width,
@@ -265,7 +312,8 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                         }
                         u32 top = mid > left ? mid : left;
                         if (right > top) top = right;
-                        if ((((x + pixels - 1) * 32 + top) >> 5) + 1 < width) {
+                        if (pixels == 4 && sample_pixels4(d + x, s, x, sh, width)) {
+                        } else if ((((x + pixels - 1) * 32 + top) >> 5) + 1 < width) {
                             /* Every sample and its right neighbour lie inside the
                              * row: the same arithmetic as sample_q5, unchecked. */
                             for (u32 k = 0; k < pixels; ++k) {
@@ -356,7 +404,10 @@ static void *segment_worker(void *arg) {
         if (first >= j->end) break;
         u32 last = first + SEGMENT_ROWS < j->end ? first + SEGMENT_ROWS : j->end;
         for (u32 channel = 0; channel < 3; ++channel) {
-            int rc = warp_plane_cells_bilinear_range(j->src[channel], j->dst[channel],
+            /* Bilinear on luma only: chroma is half resolution and a 1-2
+             * pixel chroma step is not visible next to the smooth luma edge. */
+            int rc = (channel ? warp_plane_cells_smooth_range : warp_plane_cells_bilinear_range)(
+                                            j->src[channel], j->dst[channel],
                                             j->depth, j->width[channel],
                                             j->height[channel], j->src_stride[channel],
                                             j->dst_stride[channel], j->depth_width,
@@ -488,7 +539,7 @@ static int process_frame(const struct real3d_frame *f) {
     if (rc) goto done;
     for (u32 channel = 0; channel < 3; ++channel) {
         source[channel] = map(f->src[channel], src_sizes[channel]);
-        destination[channel] = map(f->dst[channel], dst_sizes[channel]);
+        destination[channel] = map_output(f->dst[channel], dst_sizes[channel], dst_strides[channel]);
         if (!source[channel] || !destination[channel]) { rc = -5; goto done; }
     }
     u64 mapped_at = monotonic_us();

@@ -121,6 +121,23 @@ tetra 33.4 ms. Real3D: staircase gone, but warp 20–30 ms, ~39 fps (perf1:
   frames (`perf5 repeated frames per 300`) and its own cost; this decides
   whether skipping repeated frames is worth implementing.
 
+## perf6
+
+Measured with perf5: the source repeats almost no frames (0 per 300 after
+the first seconds), so frame skipping is pointless, and the sparse signature
+itself cost 2.5–5 ms per frame (AI HDR 41.5 fps vs 48.5 on perf4). Real3D
+recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
+
+- **AI HDR:** signature removed. New **compact16** kernel: same table and
+  lookups, channel extraction by narrowing shifts and 16-bit lerps with
+  SQRDMULH over 8 lanes (both B rows at once); within 1 level of the cube,
+  identity exact, NEON output equals the portable path. Short autotune
+  (10 frames each) compact vs compact16, log `CPU perf6: autotune …`.
+- **Real3D:** horizontal (bilinear) blending only on luma; chroma keeps the
+  vertical blend and the shared cell path. Luma per-pixel cells gather with
+  one 16-byte load + TBL. Destination planes are mapped without the cache
+  invalidate (fully overwritten, 64-byte aligned lines, flushed after).
+
 ## Variant `-HDR60` (opt-in)
 
 Same adapter; AI HDR and Reading request **60 Hz** instead of 90 Hz from the
