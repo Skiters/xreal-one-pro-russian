@@ -48,6 +48,45 @@ FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
          '-mcpu=cortex-a53', '-mfix-cortex-a53-835769', '-Wl,--fix-cortex-a53-843419']
 
 
+CONFIG = 'pilot/conf/pilot_default_config.json'
+
+
+def experimental_config(data):
+    """Opt-in experiment, exact text edits that keep the vendor comments.
+
+    1. Offer the vendor "Gaming - 144Hz" hot key (over_clocking). The mode stays
+       off by default; Pilot forwards it to the glasses controller, which
+       rejects it when unsupported (NRDpSetOverclockingEnable "no function").
+    2. Show the vendor "Sound Effects" item (ui_show_flag.audio_effect_item).
+    3. Request 60 Hz instead of 90 Hz from the source in the three CPU-processed
+       modes (AI HDR, Movie, Reading); the CPU cannot process 90 frames/s.
+    """
+    from package_format import validate_config
+    text = data.decode('utf-8')
+    edits = []
+
+    def once(old, new, start=0, end=None):
+        nonlocal text
+        segment = text[start:end if end is not None else len(text)]
+        if segment.count(old) != 1:
+            raise ValueError(f'Config anchor not unique: {old!r}')
+        at = start + segment.index(old)
+        text = text[:at] + new + text[at+len(old):]
+        edits.append(old.strip()[:60] + ' -> ' + new.strip()[:60])
+
+    once('"canvas_optimal_3dof","custom_mode"],', '"canvas_optimal_3dof","custom_mode", "over_clocking"],')
+    once('"audio_effect_item":false,', '"audio_effect_item":true,')
+    for section, block in (('"color_mode" :', '"reading" :'), ('"color_mode" :', '"movie" :'),
+                           ('"dynamic_range" :', '"ai hdr" :')):
+        s = text.index(section)
+        b = text.index(block, s)
+        e = text.index('}', b)  # each block's dp line precedes its first nested '}'
+        once('"dp" : "1920_1080_90_DEFAULT",', '"dp" : "1920_1080_60",', b, e)
+    result = text.encode('utf-8')
+    validate_config(result, CONFIG)
+    return result, edits
+
+
 def sha(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -191,6 +230,14 @@ def build(args):
               'real3d_proplus': 'vectorized exact-output warp (upstream 2689834)',
               'menu_and_osd': 'unchanged rc7 (compare_ui.c and patched libnr_osd.so)',
               'abi': abi_report})
+    changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
+    if args.experimental:
+        files[CONFIG], edits = experimental_config(files[CONFIG])
+        changed_expected.append(CONFIG)
+        manifest['perf']['experimental_config'] = {
+            'file': CONFIG, 'edits': edits,
+            'note': '144 Hz hot key is off by default; hardware support on One Pro is unverified'}
+        manifest['perf']['changed_files'] = changed_expected
     manifest['build_id'] = sha(encode(manifest))
     validate_build(manifest, 'experimental', PILOT)
     files[ADAPTER] = adapter
@@ -208,7 +255,7 @@ def build(args):
     packed = bytearray(rc7[:64] + stream.getvalue().translate(XOR))
     packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
     packed[:4] = container_crc(packed).to_bytes(4, 'little')
-    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}.bin'
+    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{"-EXP144" if args.experimental else ""}.bin'
     target = out/name
     target.write_bytes(packed)
 
@@ -218,7 +265,7 @@ def build(args):
     old_files, _ = unpack(rc7)
     changed = sorted(n for n in old_files if not n.endswith('/') and
                      old_files[n] != unpack(bytes(packed))[0].get(n))
-    if changed != sorted(manifest['perf']['changed_files']):
+    if changed != sorted(changed_expected):
         raise RuntimeError(f'Unexpected changed files: {changed}')
     try:
         import backend
@@ -247,4 +294,6 @@ if __name__ == '__main__':
                    default=ROOT/'outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin')
     p.add_argument('--output', type=Path, default=ROOT/'outputs/perf')
     p.add_argument('--tag', default='perf1')
+    p.add_argument('--experimental', action='store_true',
+                   help='Also apply experimental_config(): 144 Hz hot key, sound effects item, 60 Hz CPU modes')
     build(p.parse_args())

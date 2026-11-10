@@ -57,6 +57,10 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/perf-v* ]]; then TAG="perf${GITHUB_REF_NAME#perf-v}"; else TAG="perf-${GITHUB_SHA::7}"; fi
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
             --output outputs/perf --tag "$TAG"
+          # Same adapter plus the opt-in config experiment (144 Hz hot key etc.).
+          python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
+            --output outputs/exp --tag "$TAG" --experimental
+          cmp outputs/perf/libxreal_cpu_adapter.so outputs/exp/libxreal_cpu_adapter.so
 
       - name: ARM64 tests on the shipped adapter
         env:
@@ -94,6 +98,7 @@ jobs:
           import json
           from pathlib import Path
           report = json.loads(Path('outputs/perf/build-report.json').read_text())
+          report.update(json.loads(Path('outputs/exp/build-report.json').read_text()))
           for name, item in report.items():
               print(f"### {name}\n\nSHA256 `{item['sha256']}` · {item['bytes']} bytes · "
                     f"{item['readback_files']} readback files\n\nChanged vs rc7: "
@@ -115,8 +120,11 @@ jobs:
           name: xreal-one-pro-perf
           path: |
             outputs/perf/*.bin
+            outputs/exp/*.bin
             outputs/perf/build-report.json
+            outputs/exp/build-report.json
             outputs/perf/SHA256SUMS.txt
+            outputs/exp/SHA256SUMS.txt
             outputs/perf/aihdr-instructions.json
             outputs/perf/real3d-instructions.json
             outputs/perf/libxreal_cpu_adapter.so
@@ -126,8 +134,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" outputs/perf/*.bin outputs/perf/SHA256SUMS.txt \
-            outputs/perf/build-report.json outputs/perf/aihdr-instructions.json \
+          cat outputs/perf/SHA256SUMS.txt outputs/exp/SHA256SUMS.txt > SHA256SUMS.txt
+          cp outputs/exp/build-report.json build-report-EXP144.json
+          gh release create "$GITHUB_REF_NAME" outputs/perf/*.bin outputs/exp/*.bin SHA256SUMS.txt \
+            outputs/perf/build-report.json build-report-EXP144.json outputs/perf/aihdr-instructions.json \
             outputs/perf/real3d-instructions.json \
             --title "One Pro perf candidate $GITHUB_REF_NAME" --prerelease \
             --notes-file firmware/PERF.md

@@ -52,3 +52,23 @@ python3 installer/flash_cli.py logs    ./device-logs                            
 Rollback: install the rc7 BIN (`XREAL-one-pro-Pilot2-RU-0.7.0.bin`) the same
 way. There is no automatic rollback. X1112011 on Pilot 2.0 remains an
 experimental SKU in the upstream project.
+
+## Experimental variant `-EXP144` (opt-in)
+
+Same adapter, plus exact text edits in `pilot/conf/pilot_default_config.json`
+(all vendor comments kept; listed in the BIN manifest):
+
+1. Hot key list gains the vendor **«Игра — 144 Гц»** (`over_clocking`). Off by
+   default; assign it in the hot-key menu to try. Pilot forwards it to the
+   glasses controller, which rejects it if unsupported, and the OSD shows
+   «Подключённое устройство не поддерживает вывод 144 Гц» when the source
+   cannot output 144 Hz. One Pro panel support for this mode is **unverified**;
+   even stock One Pro 1.9.1 ships it disabled.
+2. Vendor **«Звуковые эффекты»** menu item is shown (`audio_effect_item`).
+   Whether it changes sound on One Pro is unknown.
+3. AI HDR, Movie and Reading request **60 Hz** from the source instead of 90 Hz,
+   because their frames are processed on the CPU.
+
+The 240 Hz `frame_rate_boost` mode is not exposed: this OSD has no labels for it.
+If the picture is lost, USB installation still works without video: reinstall
+the plain perf BIN or rc7.
