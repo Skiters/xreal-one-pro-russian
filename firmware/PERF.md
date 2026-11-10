@@ -138,7 +138,14 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
-## Variant `-HDR60` (opt-in)
+## Variant `-HDR60-UI` (opt-in, One Pro)
+
+Adds upstream's UI experiment (`firmware/ui_fast.py`): exact rc7 OSD refresh
+and animation timers 30 -> 16 ms, OSD action/interface logs off, first boot
+wait 1.0 -> 0.25 s, unused ASUS OSD modules removed. The adapter is built
+without `XREAL_UI_FAST`, so HDR timing is still logged every 30 frames.
+
+## Variant `-HDR60` (superseded by `-HDR60-UI`)
 
 Same adapter; AI HDR and Reading request **60 Hz** instead of 90 Hz from the
 source, because their frames are processed on the CPU. The display-mode menu

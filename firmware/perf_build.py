@@ -38,7 +38,8 @@ COMPILED = ['firmware/cpu_adapter.c', 'firmware/lut_fast.c', 'firmware/runtime.c
 SOURCES = COMPILED + ['firmware/runtime.h', 'firmware/onepro_warp.h',
                       'firmware/generate_compare_ui.py', 'firmware/compare_modes.py',
                       'firmware/abi_imports.json', 'firmware/perf_build.py',
-                      'installer/profiles.py', 'installer/package_format.py']
+                      'installer/profiles.py', 'installer/package_format.py',
+                      'firmware/ui_fast.py']
 # rc7 flags, plus scheduling for the in-order Cortex-A53 (CPU part 0xd03 r0p4)
 # and both A53 errata workarounds that apply to that revision.
 # -nostdlibinc: arm_neon.h needs only clang's own stdint.h; the build host has
@@ -54,10 +55,15 @@ CONFIG = 'pilot/conf/pilot_default_config.json'
 
 
 def experimental(files):
-    """Opt-in variant (-HDR60): AI HDR and Reading request 60 Hz instead of
-    90 Hz from the source, because their frames are processed on the CPU.
-    The display-mode menu is unchanged rc7 (Vivid/«Насыщенный» stays): the
-    144 Hz game-mode route was removed after the One Pro OSD hid that row.
+    """Opt-in variant (-HDR60-UI), One Pro only:
+    1. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
+       because their frames are processed on the CPU.
+    2. Upstream's UI experiment (firmware/ui_fast.py, 9d5a173/2689834): exact
+       rc7 OSD refresh/animation timers 30 -> 16 ms, OSD action/interface logs
+       off, first boot wait 1.0 -> 0.25 s, unused ASUS OSD modules removed.
+       The adapter is NOT built with XREAL_UI_FAST, so HDR timing stays logged
+       every 30 frames for measurements.
+    The display-mode menu rows are rc7 (Vivid/«Насыщенный» stays).
     """
     from package_format import validate_config
     edits = []
@@ -73,8 +79,16 @@ def experimental(files):
         config = config[:at] + new + config[at+len(old):]
         edits.append(f'{CONFIG} {block.strip(": ")}: dp 1920_1080_90_DEFAULT -> 1920_1080_60')
     files[CONFIG] = config.encode('utf-8')
+    from ui_fast import apply as ui_fast_apply
+    before = set(files)
+    ui = ui_fast_apply(files, 'one-pro')  # rewrites CONFIG after the 60 Hz edit
+    removed = sorted(before - set(files))
+    edits.append('ui_fast (upstream): OSD timers 30 -> 16 ms, OSD logs off, '
+                 f'boot_wait_time1 0.25 s, removed {len(removed)} ASUS files')
     validate_config(files[CONFIG], CONFIG)
-    return [CONFIG], edits
+    if 'refresh_timer_ms' not in ui or ui['refresh_timer_ms'] != 16:
+        raise ValueError('Unexpected ui_fast result')
+    return [CONFIG, 'pilot/bin/libnr_osd.so'] + removed, edits
 
 
 def sha(data):
@@ -226,7 +240,7 @@ def build(args):
         changed_expected += changed
         manifest['perf']['experimental'] = {
             'edits': edits,
-            'note': 'AI HDR and Reading request 60 Hz from the source; display-mode menu unchanged rc7'}
+            'note': 'AI HDR and Reading request 60 Hz from the source; upstream ui_fast OSD timers/logs/ASUS pruning'}
         manifest['perf']['changed_files'] = changed_expected
     manifest['build_id'] = sha(encode(manifest))
     validate_build(manifest, 'experimental', PILOT)
@@ -245,7 +259,7 @@ def build(args):
     packed = bytearray(rc7[:64] + stream.getvalue().translate(XOR))
     packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
     packed[:4] = container_crc(packed).to_bytes(4, 'little')
-    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{"-HDR60" if args.experimental else ""}.bin'
+    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{"-HDR60-UI" if args.experimental else ""}.bin'
     target = out/name
     target.write_bytes(packed)
 
@@ -285,5 +299,5 @@ if __name__ == '__main__':
     p.add_argument('--output', type=Path, default=ROOT/'outputs/perf')
     p.add_argument('--tag', default='perf1')
     p.add_argument('--experimental', action='store_true',
-                   help='Also apply experimental(): 60 Hz source for AI HDR/Reading')
+                   help='Also apply experimental(): 60 Hz source for AI HDR/Reading + upstream ui_fast')
     build(p.parse_args())
