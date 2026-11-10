@@ -86,3 +86,113 @@ int xreal_full_rgb_lut(const u64 *table, u8 *r, u8 *g, u8 *b,
     }
     return 0;
 }
+
+/* Compact cache-resident variant (perf branch).
+ * The table above is 4.25 MiB and is read at random positions; the device
+ * (4x Cortex-A53 @ 1.27 GHz, 512 KiB shared L2, 4 KiB pages, no THP) misses
+ * L2 and the TLB on most pixels. Here only R is expanded, for each of the
+ * 17x17 (B,G) cube nodes: 17*17*256 words = 289 KiB, which fits in L2.
+ * G and B use exact 1/255 weights, so the only rounding is the Q2 entry
+ * (<= 1/8 RGB8 level) and the final division: <= 1 level versus the cube.
+ * Words after the table: 256 G-axis and 256 B-axis maps, (offset<<8)|frac. */
+#define COMPACT_WORDS (17U * 17U * 256U)
+#define COMPACT_G_STEP 256U
+#define COMPACT_B_STEP (17U * 256U)
+
+unsigned long long xreal_compact_table_bytes(void) {
+    return (u64)(COMPACT_WORDS + 512U) * sizeof(u32);
+}
+
+int xreal_build_compact_table_range(const u16 *cube, u32 *table,
+                                    u32 begin_b, u32 end_b) {
+    if (!cube || !table || begin_b > end_b || end_b > 17) return -22;
+    if (!begin_b) for (u32 v = 0; v < 256; ++v) {
+        u32 i = v*16/255, f = v*16 - i*255;
+        if (i == 16) { i = 15; f = 255; }
+        table[COMPACT_WORDS+v] = ((i*COMPACT_G_STEP) << 8) | f;
+        table[COMPACT_WORDS+256+v] = ((i*COMPACT_B_STEP) << 8) | f;
+    }
+    for (u32 b = begin_b; b < end_b; ++b)
+        for (u32 g = 0; g < 17; ++g)
+            for (u32 r = 0; r < 256; ++r) {
+                u32 ri = r*16/255, rf = r*16 - ri*255;
+                if (ri == 16) { ri = 15; rf = 255; }
+                u32 base = ((b*17+g)*17+ri)*3, packed = 0;
+                for (u32 c = 0; c < 3; ++c) {
+                    u32 v = (cube[base+c]*(255-rf) + cube[base+3+c]*rf + 127)/255;
+                    packed |= ((v+32)/64) << (10*c);
+                }
+                table[(b*17+g)*256+r] = packed;
+            }
+    return 0;
+}
+
+/* (x0*(255-wb) + x1*wb) has 255*255*4 units per RGB8 level; <= 66.3e6. */
+#define COMPACT_DIVISOR 260100U
+#define COMPACT_CHANNEL(p00,p01,p10,p11,shift,ig,wg,ib,wb) \
+    ((((((p00)>>(shift))&1023)*(ig) + (((p01)>>(shift))&1023)*(wg))*(ib) + \
+      ((((p10)>>(shift))&1023)*(ig) + (((p11)>>(shift))&1023)*(wg))*(wb) + \
+      COMPACT_DIVISOR/2) / COMPACT_DIVISOR)
+
+int xreal_compact_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
+                          u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    if (!table || !r || !g || !b || !width || !height ||
+        width>1920 || height>1080 || rs<width || gs<width || bs<width ||
+        rs>4096 || gs>4096 || bs>4096) return -22;
+    const u32 *gmap = table + COMPACT_WORDS, *bmap = gmap + 256;
+    for (u32 y = 0; y < height; ++y) {
+        u8 *rp = r+(u64)y*rs, *gp = g+(u64)y*gs, *bp = b+(u64)y*bs;
+        /* Flat areas (letterbox bars, UI, sky) repeat whole 4-pixel groups. */
+        u32 last_r = 0, last_g = 0, last_b = 0, out_r = 0, out_g = 0, out_b = 0;
+        int have_last = 0;
+        u32 x = 0;
+        for (; x+4 <= width; x += 4) {
+            u32 kr, kg, kb;
+            __builtin_memcpy(&kr, rp+x, 4);
+            __builtin_memcpy(&kg, gp+x, 4);
+            __builtin_memcpy(&kb, bp+x, 4);
+            if (have_last && kr == last_r && kg == last_g && kb == last_b) {
+                __builtin_memcpy(rp+x, &out_r, 4);
+                __builtin_memcpy(gp+x, &out_g, 4);
+                __builtin_memcpy(bp+x, &out_b, 4);
+                continue;
+            }
+            pixels4 p00, p01, p10, p11, wg, wb;
+            for (u32 lane = 0; lane < 4; ++lane) {
+                u32 gm = gmap[gp[x+lane]], bm = bmap[bp[x+lane]];
+                u32 index = (gm >> 8) + (bm >> 8) + rp[x+lane];
+                p00[lane] = table[index];
+                p01[lane] = table[index+COMPACT_G_STEP];
+                p10[lane] = table[index+COMPACT_B_STEP];
+                p11[lane] = table[index+COMPACT_B_STEP+COMPACT_G_STEP];
+                wg[lane] = gm & 255; wb[lane] = bm & 255;
+            }
+            pixels4 ig = 255-wg, ib = 255-wb;
+            pixels4 red = COMPACT_CHANNEL(p00,p01,p10,p11,0,ig,wg,ib,wb);
+            pixels4 green = COMPACT_CHANNEL(p00,p01,p10,p11,10,ig,wg,ib,wb);
+            pixels4 blue = COMPACT_CHANNEL(p00,p01,p10,p11,20,ig,wg,ib,wb);
+            bytes4 rr = __builtin_convertvector(red, bytes4);
+            bytes4 gg = __builtin_convertvector(green, bytes4);
+            bytes4 bb = __builtin_convertvector(blue, bytes4);
+            __builtin_memcpy(rp+x, &rr, 4);
+            __builtin_memcpy(gp+x, &gg, 4);
+            __builtin_memcpy(bp+x, &bb, 4);
+            last_r = kr; last_g = kg; last_b = kb; have_last = 1;
+            __builtin_memcpy(&out_r, &rr, 4);
+            __builtin_memcpy(&out_g, &gg, 4);
+            __builtin_memcpy(&out_b, &bb, 4);
+        }
+        for (; x < width; ++x) {
+            u32 gm = gmap[gp[x]], bm = bmap[bp[x]];
+            u32 index = (gm >> 8) + (bm >> 8) + rp[x];
+            u32 p00 = table[index], p01 = table[index+COMPACT_G_STEP];
+            u32 p10 = table[index+COMPACT_B_STEP];
+            u32 p11 = table[index+COMPACT_B_STEP+COMPACT_G_STEP];
+            u32 wg = gm & 255, wb = bm & 255, ig = 255-wg, ib = 255-wb;
+            rp[x] = (u8)COMPACT_CHANNEL(p00,p01,p10,p11,0,ig,wg,ib,wb);
+            gp[x] = (u8)COMPACT_CHANNEL(p00,p01,p10,p11,10,ig,wg,ib,wb);
+            bp[x] = (u8)COMPACT_CHANNEL(p00,p01,p10,p11,20,ig,wg,ib,wb);
+        }
+    }
+    return 0;
+}

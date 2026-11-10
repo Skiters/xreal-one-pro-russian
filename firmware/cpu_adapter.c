@@ -25,6 +25,21 @@ static u32 frame_count;
 extern u64 xreal_rgb_table_bytes(void);
 extern int xreal_build_rgb_table_range(const u16 *,u64 *,u32,u32);
 extern int xreal_full_rgb_lut(const u64 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
+extern u64 xreal_compact_table_bytes(void);
+extern int xreal_build_compact_table_range(const u16 *,u32 *,u32,u32);
+extern int xreal_compact_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
+/* Perf autotune: after every LUT init, alternate the dense (rc7) and compact
+ * kernels for TUNE frames each, then keep the one with the lower median
+ * conversion time and free the other table. Both stay within one RGB8 level
+ * of the cube, so the trial cannot produce visible colour errors. */
+#define TUNE 24
+static u32 *compact;
+static int choice=-1;
+static u32 tune[2][TUNE], tuned[2];
+static u32 median(u32 *v,u32 n) {
+    for(u32 i=1;i<n;i++)for(u32 j=i;j && v[j-1]>v[j];j--){u32 x=v[j];v[j]=v[j-1];v[j-1]=x;}
+    return v[n/2];
+}
 static void trace(const char *stage,u64 p,u32 n,long value) {
     char line[200];
     int count=snprintf(line,sizeof(line),"CPU diagnostic: %s phys=0x%lx size=%u value=%ld\n",stage,p,n,value);
@@ -68,18 +83,28 @@ static void *build_worker(void *arg) {
     j->rc=xreal_build_rgb_table_range(j->cube,j->table,j->begin,j->end);
     return (void *)0;
 }
-struct rgb_job {const u64 *table;u8 *planes[3];u32 strides[3],width,height;int rc;};
-static void *rgb_worker(void *arg) {
-    struct rgb_job *j=arg;
-    j->rc=xreal_full_rgb_lut(j->table,j->planes[0],j->planes[1],j->planes[2],
-        j->strides[0],j->strides[1],j->strides[2],j->width,j->height);
+struct compact_job {const u16 *cube;u32 *table;u32 begin,end;int rc;};
+static void *compact_worker(void *arg) {
+    struct compact_job *j=arg;
+    j->rc=xreal_build_compact_table_range(j->cube,j->table,j->begin,j->end);
     return (void *)0;
 }
-static int rgb_parallel(const u64 *table,u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
+struct rgb_job {const u64 *table;const u32 *compact;u8 *planes[3];u32 strides[3],width,height;int rc;};
+static void *rgb_worker(void *arg) {
+    struct rgb_job *j=arg;
+    if(j->compact)
+        j->rc=xreal_compact_rgb_lut(j->compact,j->planes[0],j->planes[1],j->planes[2],
+            j->strides[0],j->strides[1],j->strides[2],j->width,j->height);
+    else
+        j->rc=xreal_full_rgb_lut(j->table,j->planes[0],j->planes[1],j->planes[2],
+            j->strides[0],j->strides[1],j->strides[2],j->width,j->height);
+    return (void *)0;
+}
+static int rgb_parallel(const u64 *table,const u32 *small,u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
     struct rgb_job jobs[4];u32 count=h<4?1:4;
     for(u32 i=0;i<count;i++) {
         u32 begin=h*i/count,end=h*(i+1)/count;
-        jobs[i].table=table;jobs[i].width=w;jobs[i].height=end-begin;jobs[i].rc=0;
+        jobs[i].table=table;jobs[i].compact=small;jobs[i].width=w;jobs[i].height=end-begin;jobs[i].rc=0;
         for(u32 c=0;c<3;c++) {
             jobs[i].planes[c]=planes[c]+(u64)begin*strides[c];
             jobs[i].strides[c]=strides[c];
@@ -106,6 +131,8 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
             cube[i*3+c]=(u16)p[c*4913+i]*256;
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
+        free(compact);compact=(void *)0;
+        choice=-1;tuned[0]=tuned[1]=0;
         u64 *next=malloc(xreal_rgb_table_bytes());
         if(!next){record("LUT allocation failed",-12);return result(a->result,-12);}
         struct build_job jobs[4];
@@ -114,6 +141,19 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         int rc=0;
         for(u32 i=0;i<4;i++)if(jobs[i].rc)rc=jobs[i].rc;
         if(rc)free(next);else dense=next;
+        if(!rc) {
+            /* The compact table is optional: on any failure keep rc7 behaviour. */
+            u32 *small=malloc(xreal_compact_table_bytes());
+            int crc=small ? 0 : -12;
+            if(small) {
+                struct compact_job cjobs[4];
+                for(u32 i=0;i<4;i++)cjobs[i]=(struct compact_job){cube,small,17*i/4,17*(i+1)/4,0};
+                xreal_parallel_run(compact_worker,cjobs,sizeof(cjobs[0]),4);
+                for(u32 i=0;i<4;i++)if(cjobs[i].rc)crc=cjobs[i].rc;
+            }
+            if(crc){free(small);choice=0;record("perf: compact table unavailable, dense only",crc);}
+            else compact=small;
+        }
         frame_count=0;record("LUT initialized",rc);
         return result(a->result,rc);
     }
@@ -121,10 +161,11 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(call->length!=8)return -22;
         u64 p=*(const u64 *)call->args;
         if(!valid(p,64))return -22;
-        record("LUT closing",0);free(dense);dense=(void *)0;return result(p,0);
+        record("LUT closing",0);free(dense);dense=(void *)0;
+        free(compact);compact=(void *)0;choice=-1;return result(p,0);
     }
     if(strcmp(call->name,"ArArmlut3dProcessRgbToYuv"))return xreal_real3d_rpc(core,call,sync);
-    if(call->length!=52 || !dense)return -22;
+    if(call->length!=52 || (choice!=1 && !dense) || (choice!=0 && !compact))return -22;
     const struct frame_args *a=call->args;
     if(!a->width || !a->height || a->width>1920 || a->height>1080 ||
        (a->width&1)||(a->height&1)||(a->strides[0]&1)||!valid(a->result,64))return -22;
@@ -138,9 +179,27 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     }
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
     struct timespec before,converted,flushed;
+    int kernel=choice>=0 ? choice : (int)(frame_count&1);
     clock_gettime(1,&before);
-    rc=rgb_parallel(dense,planes,a->strides,a->width,a->height);
+    rc=rgb_parallel(dense,kernel ? compact : (u32 *)0,planes,a->strides,a->width,a->height);
     clock_gettime(1,&converted);
+    if(!rc && choice<0) {
+        long us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
+        if(tuned[kernel]<TUNE)tune[kernel][tuned[kernel]++]=(u32)(us>0 ? us : 0);
+        if(tuned[0]==TUNE && tuned[1]==TUNE) {
+            u32 m0=median(tune[0],TUNE),m1=median(tune[1],TUNE);
+            choice=m1<m0;
+            char line[160];
+            int n=snprintf(line,sizeof(line),"CPU perf: autotune dense_median_us=%u compact_median_us=%u choice=%s\n",
+                           m0,m1,choice ? "compact" : "dense");
+            if(n>0 && n<(int)sizeof(line)) {
+                int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
+                if(fd>=0){write(fd,line,(u64)n);close(fd);}
+            }
+            if(choice){free(dense);dense=(void *)0;}
+            else{free(compact);compact=(void *)0;}
+        }
+    }
     if(!rc && sizes[0]>0x100000) {
         /* Vendor HAL uses a global cache-flush ioctl for sizes above 1 MiB.
          * All three RGB planes have been modified before this call. */

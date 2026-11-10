@@ -1,0 +1,243 @@
+"""Perf candidate for One Pro: rebuild only libxreal_cpu_adapter.so and repack
+the user-tested rc7 BIN around it. Never opens a USB device.
+
+Inputs are public and hash-pinned: the published rc7 One Pro BIN and the base
+container already stored in this repository. System libraries are replaced by
+link-time stubs generated from firmware/abi_imports.json (symbol names and
+versions only); the resulting imports are checked against rc7's adapter.
+"""
+import argparse
+import copy
+import hashlib
+import io
+import json
+from pathlib import Path
+import subprocess
+import sys
+import zipfile
+import zlib
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'installer'))
+sys.path.insert(0, str(ROOT / 'firmware'))
+from package_format import container_crc, read_container, validate_elf  # noqa: E402
+from profiles import validate_build  # noqa: E402
+
+RC7_SHA = '721e08d0828e116ad18d26168d43a5fc9788ba3ce52e0b34a7c234159b5bde43'
+RC7_URL = ('https://github.com/Skiters/xreal-one-pro-russian/releases/download/'
+           'v0.7.0/XREAL-one-pro-Pilot2-RU-0.7.0.bin')
+BASE_SHA = '1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0'
+PILOT = '2.0.0.20260920102250'
+XOR = bytes(i ^ 0x66 for i in range(256))
+ADAPTER = 'pilot/bin/libxreal_cpu_adapter.so'
+MANIFEST = 'pilot/xreal-build.json'
+CHECKSUMS = 'pilot/checksums.sha256'
+COMPILED = ['firmware/cpu_adapter.c', 'firmware/lut_fast.c', 'firmware/runtime.c',
+            'work/3d-lab/real3d_cpu.c', 'firmware/compare_ui.c', 'firmware/ui_dispatch.S',
+            'firmware/onepro_warp.c']
+SOURCES = COMPILED + ['firmware/runtime.h', 'firmware/onepro_warp.h',
+                      'firmware/generate_compare_ui.py', 'firmware/compare_modes.py',
+                      'firmware/abi_imports.json', 'firmware/perf_build.py',
+                      'installer/profiles.py', 'installer/package_format.py']
+# rc7 flags, plus scheduling for the in-order Cortex-A53 (CPU part 0xd03 r0p4)
+# and both A53 errata workarounds that apply to that revision.
+FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
+         '-fuse-ld=lld', '-Wall', '-Wextra', '-Werror', '-Wl,--no-undefined',
+         '-Wl,-soname,libxreal_cpu_adapter.so', '-I', 'firmware',
+         '-DXREAL_COMPARE_ONEPRO_WARP=1',
+         '-mcpu=cortex-a53', '-mfix-cortex-a53-835769', '-Wl,--fix-cortex-a53-843419']
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def checked(path, expected):
+    data = Path(path).read_bytes()
+    if sha(data) != expected:
+        raise ValueError(f'Input hash mismatch: {path}')
+    return data
+
+
+def encode(value):
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)+'\n').encode()
+
+
+def unpack(container):
+    with zipfile.ZipFile(io.BytesIO(container[64:].translate(XOR))) as z:
+        return ({i.filename: z.read(i) for i in z.infolist()},
+                {i.filename: copy.copy(i) for i in z.infolist()})
+
+
+def checksums(files):
+    return ''.join(sha(data)+'  ./'+name[6:]+'\n' for name, data in sorted(files.items())
+                   if not name.endswith('/') and name != CHECKSUMS).encode()
+
+
+def build_stubs(clang, directory):
+    """Empty functions with the device's sonames and symbol versions."""
+    directory.mkdir(parents=True, exist_ok=True)
+    abi = json.loads((ROOT/'firmware/abi_imports.json').read_text())
+    for lib in abi['libraries']:
+        stem = directory/lib['link_name'].replace('.', '_')
+        stem.with_suffix('.c').write_text(''.join(f'void {s}(void) {{}}\n' for s in lib['symbols']))
+        command = [str(clang), '--target=aarch64-linux-gnu', '-shared', '-nostdlib', '-fPIC',
+                   '-fno-builtin', '-w', '-fuse-ld=lld', str(stem.with_suffix('.c')), '-o', str(directory/lib['link_name'])]
+        if lib['soname']:
+            command.append('-Wl,-soname,'+lib['soname'])
+        if lib['version']:
+            script = stem.with_suffix('.map')
+            script.write_text(lib['version']+' { global: '+' '.join(s+';' for s in lib['symbols'])+
+                              ' local: *; };\n')
+            command.append('-Wl,--version-script,'+str(script))
+        subprocess.run(command, check=True)
+    return abi
+
+
+def dynamic(blob):
+    from elftools.elf.elffile import ELFFile
+    elf = ELFFile(io.BytesIO(blob))
+    dyn = elf.get_section_by_name('.dynamic')
+    needed = [t.needed for t in dyn.iter_tags() if t.entry.d_tag == 'DT_NEEDED']
+    versions = {}
+    section = elf.get_section_by_name('.gnu.version_r')
+    if section:
+        for _, auxiliary in section.iter_versions():
+            for entry in auxiliary:
+                versions[entry.entry.vna_other] = entry.name
+    symbol_versions = elf.get_section_by_name('.gnu.version')
+    imports, exports = {}, set()
+    for index, symbol in enumerate(elf.get_section_by_name('.dynsym').iter_symbols()):
+        if not symbol.name:
+            continue
+        if symbol['st_shndx'] == 'SHN_UNDEF':
+            ndx = symbol_versions.get_symbol(index)['ndx'] if symbol_versions else 0
+            imports[symbol.name] = versions.get(ndx) if isinstance(ndx, int) else None
+        elif symbol['st_info']['bind'] in ('STB_GLOBAL', 'STB_WEAK'):
+            exports.add(symbol.name)
+    return needed, imports, exports
+
+
+def check_abi(new, old, abi):
+    new_needed, new_imports, new_exports = dynamic(new)
+    old_needed, old_imports, old_exports = dynamic(old)
+    allowed = {}
+    for lib in abi['libraries']:
+        for symbol in lib['symbols']:
+            allowed.setdefault(symbol, lib['version'])
+    if new_needed != old_needed:
+        raise ValueError(f'DT_NEEDED changed: {new_needed} != {old_needed}')
+    for name, version in new_imports.items():
+        if name not in allowed or allowed[name] != version:
+            raise ValueError(f'Import outside the device ABI: {name}@{version}')
+        if name in old_imports and old_imports[name] != version:
+            raise ValueError(f'Import version differs from rc7: {name}')
+    missing = old_exports - new_exports
+    if missing:
+        # The patched OSD imports adapter symbols; every rc7 export must remain.
+        raise ValueError(f'rc7 exports missing: {sorted(missing)}')
+    return {'needed': new_needed, 'imports': len(new_imports),
+            'new_imports': sorted(set(new_imports) - set(old_imports)),
+            'exports_superset_of_rc7': True}
+
+
+def build(args):
+    out = args.output.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    rc7 = checked(args.rc7, RC7_SHA)
+    base = checked(args.base, BASE_SHA)
+    files, attrs = unpack(rc7)
+    # Prove that this repacker reproduces rc7's own metadata before changing it.
+    original = json.loads(files[MANIFEST])
+    unsigned = {k: v for k, v in original.items() if k != 'build_id'}
+    if checksums(files) != files[CHECKSUMS] or sha(encode(unsigned)) != original['build_id']:
+        raise RuntimeError('rc7 metadata format not reproduced; refusing to repack.')
+
+    from generate_compare_ui import generate
+    base_files, _ = unpack(base)
+    generated = out/'compare_row.S'
+    generated.write_bytes(generate(base_files['pilot/bin/libnr_osd.so']).encode())
+    abi = build_stubs(args.clang, out/'stubs')
+    compiler = subprocess.check_output([str(args.clang), '--version'], text=True).splitlines()[0]
+    source_hashes = {s: sha((ROOT/s).read_bytes()) for s in SOURCES}
+    library = out/'libxreal_cpu_adapter.so'
+    flags = list(FLAGS)
+    subprocess.run([str(args.clang), *flags, *COMPILED, str(generated),
+                    '-L', str(out/'stubs'),
+                    *['-l:'+lib['link_name'] for lib in abi['libraries']],
+                    '-o', str(library)], cwd=ROOT, check=True)
+    if source_hashes != {s: sha((ROOT/s).read_bytes()) for s in SOURCES}:
+        raise RuntimeError('Sources changed during compilation.')
+    adapter = library.read_bytes()
+    validate_elf(adapter, ADAPTER)
+    abi_report = check_abi(adapter, files[ADAPTER], abi)
+
+    manifest = dict(unsigned)
+    manifest.update(
+        release=original['release']+'-'+args.tag, compiler=compiler, flags=flags,
+        sources=source_hashes, python=sys.version.split()[0], zlib=zlib.ZLIB_RUNTIME_VERSION,
+        adapter_sha256=sha(adapter),
+        verification='perf candidate built from rc7; physical mode/performance tests required',
+        perf={'base_bin_sha256': RC7_SHA, 'base_release': original['release'],
+              'changed_files': [ADAPTER, MANIFEST, CHECKSUMS],
+              'aihdr': 'dense 4.25 MiB and compact 289 KiB kernels; on-device autotune picks the faster',
+              'real3d_proplus': 'vectorized exact-output warp (upstream 2689834)',
+              'menu_and_osd': 'unchanged rc7 (compare_ui.c and patched libnr_osd.so)',
+              'abi': abi_report})
+    manifest['build_id'] = sha(encode(manifest))
+    validate_build(manifest, 'experimental', PILOT)
+    files[ADAPTER] = adapter
+    files[MANIFEST] = encode(manifest)
+    files[CHECKSUMS] = checksums(files)
+
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for name, data in sorted(files.items()):
+            info = copy.copy(attrs[name])
+            info.date_time = (2026, 1, 1, 0, 0, 0)
+            info.comment = b''
+            info.extra = b''
+            z.writestr(info, data)
+    packed = bytearray(rc7[:64] + stream.getvalue().translate(XOR))
+    packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
+    packed[:4] = container_crc(packed).to_bytes(4, 'little')
+    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}.bin'
+    target = out/name
+    target.write_bytes(packed)
+
+    _, verified, device_target = read_container(target, PILOT, 0x66)
+    if device_target is not None:
+        raise RuntimeError('One Pro package must not carry a target descriptor.')
+    old_files, _ = unpack(rc7)
+    changed = sorted(n for n in old_files if not n.endswith('/') and
+                     old_files[n] != unpack(bytes(packed))[0].get(n))
+    if changed != sorted(manifest['perf']['changed_files']):
+        raise RuntimeError(f'Unexpected changed files: {changed}')
+    try:
+        import backend
+        firmware = backend.identify_package(target)
+        if firmware is not backend.EXPERIMENTAL:
+            raise RuntimeError('Installer does not classify the BIN as One Pro Pilot 2.')
+        installer_check = 'identify_package: experimental (One Pro Pilot 2)'
+    except ImportError:
+        installer_check = 'skipped: hidapi not installed'
+    report = {name: {'sha256': sha(packed), 'bytes': len(packed),
+                     'readback_files': len(verified), 'changed_files': changed,
+                     'installer_check': installer_check, 'build': manifest}}
+    (out/'build-report.json').write_bytes(encode(report))
+    (out/'SHA256SUMS.txt').write_text(f'{sha(packed)}  {name}\n')
+    print(json.dumps({name: {k: report[name][k] for k in
+                             ('sha256', 'bytes', 'readback_files', 'changed_files', 'installer_check')}},
+                     indent=2))
+
+
+if __name__ == '__main__':
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--clang', type=Path, required=True,
+                   help='clang with lld able to target aarch64-linux-gnu')
+    p.add_argument('--rc7', type=Path, required=True, help=f'Published rc7 BIN ({RC7_URL})')
+    p.add_argument('--base', type=Path,
+                   default=ROOT/'outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin')
+    p.add_argument('--output', type=Path, default=ROOT/'outputs/perf')
+    p.add_argument('--tag', default='perf1')
+    build(p.parse_args())

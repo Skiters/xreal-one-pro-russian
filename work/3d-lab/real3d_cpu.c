@@ -153,6 +153,35 @@ static u8 sample_q5(const u8 *s, int q, u32 width) {
     return (u8)((s[x] * (32-frac) + s[x+1] * frac + 16) >> 5);
 }
 
+/* Four neighbouring pixels share one fractional displacement. Keep the
+ * scalar Q5 weights/rounding exactly, using four independent 16-bit lanes.
+ * Call only when both four-byte loads are wholly inside the source row. */
+static void sample_cell4(u8 *dst, const u8 *src, u32 frac) {
+    typedef u8 bytes4 __attribute__((vector_size(4)));
+    typedef u16 words4 __attribute__((vector_size(8)));
+    bytes4 left, right;
+    __builtin_memcpy(&left, src, 4);
+    __builtin_memcpy(&right, src + 1, 4);
+    words4 a = __builtin_convertvector(left, words4);
+    words4 b = __builtin_convertvector(right, words4);
+    words4 value = (a * (u16)(32-frac) + b * (u16)frac + (u16)16) >> 5;
+    bytes4 result = __builtin_convertvector(value, bytes4);
+    __builtin_memcpy(dst, &result, 4);
+}
+
+/* Two 16-bit lanes packed into a register; each sum is <= 8176 so neither
+ * multiplication nor the rounding addition can carry into the next lane. */
+static void sample_cell2(u8 *dst, const u8 *src, u32 frac) {
+    u16 left, right;
+    __builtin_memcpy(&left, src, 2);
+    __builtin_memcpy(&right, src + 1, 2);
+    u32 a = (left & 255U) | ((u32)(left & 0xff00U) << 8);
+    u32 b = (right & 255U) | ((u32)(right & 0xff00U) << 8);
+    u32 value = (a * (32-frac) + b * frac + 0x00100010U) >> 5;
+    u16 result = (u16)((value & 255U) | ((value >> 8) & 0xff00U));
+    __builtin_memcpy(dst, &result, 2);
+}
+
 /* The live Real3D frame is 1920x1080 with a 480x270 depth map.  Each
  * depth sample covers four luma pixels or two chroma pixels.  Process a
  * complete depth cell at once so that division and disparity calculation
@@ -187,6 +216,11 @@ static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
                         __builtin_memcpy(d + x, s + sx, 4);
                     else
                         __builtin_memcpy(d + x, s + sx, 2);
+                } else if (sx + pixels < width) {
+                    if (pixels == 4)
+                        sample_cell4(d + x, s + sx, q & 31);
+                    else
+                        sample_cell2(d + x, s + sx, q & 31);
                 } else {
                     for (u32 k = 0; k < pixels; ++k)
                         d[x + k] = sample_q5(s, (int)q + (int)k * 32, width);
