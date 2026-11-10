@@ -41,7 +41,9 @@ SOURCES = COMPILED + ['firmware/runtime.h', 'firmware/onepro_warp.h',
                       'installer/profiles.py', 'installer/package_format.py']
 # rc7 flags, plus scheduling for the in-order Cortex-A53 (CPU part 0xd03 r0p4)
 # and both A53 errata workarounds that apply to that revision.
-FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib',
+# -nostdlibinc: arm_neon.h needs only clang's own stdint.h; the build host has
+# no aarch64 libc headers and the sources include no system headers.
+FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib', '-nostdlibinc',
          '-fuse-ld=lld', '-Wall', '-Wextra', '-Werror', '-Wl,--no-undefined',
          '-Wl,-soname,libxreal_cpu_adapter.so', '-I', 'firmware',
          '-DXREAL_COMPARE_ONEPRO_WARP=1',
