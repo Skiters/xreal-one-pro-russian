@@ -118,9 +118,14 @@ def dynamic(blob):
     return needed, imports, exports
 
 
-def check_abi(new, old, abi):
+LINKER_MARKERS = {'__bss_start', '_edata', '_end'}
+
+
+def check_abi(new, old, abi, osd):
     new_needed, new_imports, new_exports = dynamic(new)
     old_needed, old_imports, old_exports = dynamic(old)
+    _, osd_imports, _ = dynamic(osd)
+    used_by_osd = set(osd_imports) & old_exports
     allowed = {}
     for lib in abi['libraries']:
         for symbol in lib['symbols']:
@@ -132,13 +137,15 @@ def check_abi(new, old, abi):
             raise ValueError(f'Import outside the device ABI: {name}@{version}')
         if name in old_imports and old_imports[name] != version:
             raise ValueError(f'Import version differs from rc7: {name}')
-    missing = old_exports - new_exports
-    if missing:
-        # The patched OSD imports adapter symbols; every rc7 export must remain.
-        raise ValueError(f'rc7 exports missing: {sorted(missing)}')
+    # The patched OSD imports adapter symbols; every one must still resolve.
+    # Linker-generated section markers are not part of the interface.
+    missing = (old_exports - LINKER_MARKERS) - new_exports
+    if not used_by_osd or missing or not used_by_osd <= new_exports:
+        raise ValueError(f'rc7 exports missing: {sorted(missing | (used_by_osd - new_exports))}')
     return {'needed': new_needed, 'imports': len(new_imports),
             'new_imports': sorted(set(new_imports) - set(old_imports)),
-            'exports_superset_of_rc7': True}
+            'osd_imports_from_adapter': sorted(used_by_osd),
+            'rc7_exports_kept': True}
 
 
 def build(args):
@@ -170,7 +177,7 @@ def build(args):
         raise RuntimeError('Sources changed during compilation.')
     adapter = library.read_bytes()
     validate_elf(adapter, ADAPTER)
-    abi_report = check_abi(adapter, files[ADAPTER], abi)
+    abi_report = check_abi(adapter, files[ADAPTER], abi, files['pilot/bin/libnr_osd.so'])
 
     manifest = dict(unsigned)
     manifest.update(
