@@ -196,3 +196,112 @@ int xreal_compact_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
     }
     return 0;
 }
+
+/* Compact2: same values and arithmetic as the compact kernel (bit-identical
+ * output), laid out [b][r][g] so that each pixel's G and G+1 neighbours sit
+ * in adjacent words: two cache lines per pixel instead of four. The 8-pixel
+ * body issues all 32 table loads before any arithmetic, which suits the
+ * in-order Cortex-A53 (it stalls on the first use of a missing load). */
+#define C2_R_STEP 17U
+#define C2_B_STEP (256U * 17U)
+
+unsigned long long xreal_compact2_table_bytes(void) {
+    return (u64)(COMPACT_WORDS + 512U) * sizeof(u32);
+}
+
+int xreal_build_compact2_table_range(const u16 *cube, u32 *table,
+                                     u32 begin_b, u32 end_b) {
+    if (!cube || !table || begin_b > end_b || end_b > 17) return -22;
+    if (!begin_b) for (u32 v = 0; v < 256; ++v) {
+        u32 i = v*16/255, f = v*16 - i*255;
+        if (i == 16) { i = 15; f = 255; }
+        table[COMPACT_WORDS+v] = (i << 8) | f;                       /* G: +i */
+        table[COMPACT_WORDS+256+v] = ((i*C2_B_STEP) << 8) | f;       /* B */
+    }
+    for (u32 b = begin_b; b < end_b; ++b)
+        for (u32 r = 0; r < 256; ++r) {
+            u32 ri = r*16/255, rf = r*16 - ri*255;
+            if (ri == 16) { ri = 15; rf = 255; }
+            for (u32 g = 0; g < 17; ++g) {
+                u32 base = ((b*17+g)*17+ri)*3, packed = 0;
+                for (u32 c = 0; c < 3; ++c) {
+                    u32 v = (cube[base+c]*(255-rf) + cube[base+3+c]*rf + 127)/255;
+                    packed |= ((v+32)/64) << (10*c);
+                }
+                table[b*C2_B_STEP + r*C2_R_STEP + g] = packed;
+            }
+        }
+    return 0;
+}
+
+static inline void c2_gather(const u32 *table, const u32 *gmap, const u32 *bmap,
+                             const u8 *rp, const u8 *gp, const u8 *bp,
+                             pixels4 *p00, pixels4 *p01, pixels4 *p10, pixels4 *p11,
+                             pixels4 *wg, pixels4 *wb) {
+    for (u32 lane = 0; lane < 4; ++lane) {
+        u32 gm = gmap[gp[lane]], bm = bmap[bp[lane]];
+        const u32 *e = table + (gm >> 8) + (bm >> 8) + rp[lane]*C2_R_STEP;
+        (*p00)[lane] = e[0]; (*p01)[lane] = e[1];
+        (*p10)[lane] = e[C2_B_STEP]; (*p11)[lane] = e[C2_B_STEP+1];
+        (*wg)[lane] = gm & 255; (*wb)[lane] = bm & 255;
+    }
+}
+
+static inline void c2_store(u8 *rp, u8 *gp, u8 *bp, pixels4 p00, pixels4 p01,
+                            pixels4 p10, pixels4 p11, pixels4 wg, pixels4 wb) {
+    pixels4 ig = 255-wg, ib = 255-wb;
+    pixels4 red = COMPACT_CHANNEL(p00,p01,p10,p11,0,ig,wg,ib,wb);
+    pixels4 green = COMPACT_CHANNEL(p00,p01,p10,p11,10,ig,wg,ib,wb);
+    pixels4 blue = COMPACT_CHANNEL(p00,p01,p10,p11,20,ig,wg,ib,wb);
+    bytes4 rr = __builtin_convertvector(red, bytes4);
+    bytes4 gg = __builtin_convertvector(green, bytes4);
+    bytes4 bb = __builtin_convertvector(blue, bytes4);
+    __builtin_memcpy(rp, &rr, 4);
+    __builtin_memcpy(gp, &gg, 4);
+    __builtin_memcpy(bp, &bb, 4);
+}
+
+int xreal_compact2_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
+                           u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    if (!table || !r || !g || !b || !width || !height ||
+        width>1920 || height>1080 || rs<width || gs<width || bs<width ||
+        rs>4096 || gs>4096 || bs>4096) return -22;
+    const u32 *gmap = table + COMPACT_WORDS, *bmap = gmap + 256;
+    for (u32 y = 0; y < height; ++y) {
+        u8 *rp = r+(u64)y*rs, *gp = g+(u64)y*gs, *bp = b+(u64)y*bs;
+        u64 last_r = 0, last_g = 0, last_b = 0, out_r = 0, out_g = 0, out_b = 0;
+        int have_last = 0;
+        u32 x = 0;
+        for (; x+8 <= width; x += 8) {
+            u64 kr, kg, kb;
+            __builtin_memcpy(&kr, rp+x, 8);
+            __builtin_memcpy(&kg, gp+x, 8);
+            __builtin_memcpy(&kb, bp+x, 8);
+            if (have_last && kr == last_r && kg == last_g && kb == last_b) {
+                __builtin_memcpy(rp+x, &out_r, 8);
+                __builtin_memcpy(gp+x, &out_g, 8);
+                __builtin_memcpy(bp+x, &out_b, 8);
+                continue;
+            }
+            pixels4 a00, a01, a10, a11, awg, awb, b00, b01, b10, b11, bwg, bwb;
+            c2_gather(table, gmap, bmap, rp+x, gp+x, bp+x, &a00, &a01, &a10, &a11, &awg, &awb);
+            c2_gather(table, gmap, bmap, rp+x+4, gp+x+4, bp+x+4, &b00, &b01, &b10, &b11, &bwg, &bwb);
+            c2_store(rp+x, gp+x, bp+x, a00, a01, a10, a11, awg, awb);
+            c2_store(rp+x+4, gp+x+4, bp+x+4, b00, b01, b10, b11, bwg, bwb);
+            last_r = kr; last_g = kg; last_b = kb; have_last = 1;
+            __builtin_memcpy(&out_r, rp+x, 8);
+            __builtin_memcpy(&out_g, gp+x, 8);
+            __builtin_memcpy(&out_b, bp+x, 8);
+        }
+        for (; x < width; ++x) {
+            u32 gm = gmap[gp[x]], bm = bmap[bp[x]];
+            const u32 *e = table + (gm >> 8) + (bm >> 8) + rp[x]*C2_R_STEP;
+            u32 p00 = e[0], p01 = e[1], p10 = e[C2_B_STEP], p11 = e[C2_B_STEP+1];
+            u32 wg = gm & 255, wb = bm & 255, ig = 255-wg, ib = 255-wb;
+            rp[x] = (u8)COMPACT_CHANNEL(p00,p01,p10,p11,0,ig,wg,ib,wb);
+            gp[x] = (u8)COMPACT_CHANNEL(p00,p01,p10,p11,10,ig,wg,ib,wb);
+            bp[x] = (u8)COMPACT_CHANNEL(p00,p01,p10,p11,20,ig,wg,ib,wb);
+        }
+    }
+    return 0;
+}

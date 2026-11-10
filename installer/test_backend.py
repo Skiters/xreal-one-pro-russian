@@ -331,6 +331,25 @@ class BackendTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'контрольная сумма контейнера'):
                 b.identify_package(path)
 
+    def test_macos_reboot_path_change_requires_single_same_model(self):
+        chosen = {'path': b'DevSrvsID:1', 'product_id': 0x0436}
+        with patch.object(b.sys, 'platform', 'darwin'), patch.object(b.hid, 'device'):
+            with patch.object(b, 'devices', return_value=[{'path': b'DevSrvsID:2', 'product_id': 0x0436}]):
+                with b.SelectedProbe(chosen):
+                    pass
+            for others in ([{'path': b'DevSrvsID:2', 'product_id': 0x0438}],
+                           [{'path': b'DevSrvsID:2', 'product_id': 0x0436},
+                            {'path': b'DevSrvsID:3', 'product_id': 0x0436}]):
+                with patch.object(b, 'devices', return_value=others):
+                    with self.assertRaises(RuntimeError):
+                        with b.SelectedProbe(chosen):
+                            pass
+        with patch.object(b.sys, 'platform', 'win32'), patch.object(b.hid, 'device'):
+            with patch.object(b, 'devices', return_value=[{'path': b'other', 'product_id': 0x0436}]):
+                with self.assertRaises(RuntimeError):
+                    with b.SelectedProbe(chosen):
+                        pass
+
     def test_selected_path_never_falls_back(self):
         with patch.object(b, 'devices', return_value=[{'path': b'other'}]), patch.object(b.hid, 'device') as device:
             with self.assertRaises(RuntimeError):

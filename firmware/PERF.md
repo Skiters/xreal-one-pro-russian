@@ -53,6 +53,28 @@ Rollback: install the rc7 BIN (`XREAL-one-pro-Pilot2-RU-0.7.0.bin`) the same
 way. There is no automatic rollback. X1112011 on Pilot 2.0 remains an
 experimental SKU in the upstream project.
 
+## perf2 (after the first on-device measurement)
+
+Measured on X1112011 with perf1/EXP144: AI HDR autotune chose compact
+(dense 22.4 ms vs compact 14.4 ms per frame); after tuning median 17.1 ms,
+50.6 frames/s (was 26.1 ms, 35.7). Real3D Pro+ warp 10.7 ms, 54 frames/s
+(was 23.3 ms, 39.9).
+
+- **AI HDR compact2:** same values and arithmetic as compact (bit-identical),
+  table laid out [b][r][g] so G and G+1 neighbours share a cache line
+  (2 lines per pixel instead of 4); 8-pixel body issues all table loads
+  before arithmetic for the in-order A53. Autotune now picks the fastest of
+  dense / compact / compact2 (20 frames each) and logs all three medians.
+- **Real3D Pro+ staircase fix:** the 480x270 depth map gave one displacement
+  per 4-row band, so slanted object edges showed a staircase (absent in the
+  native One Pro mesh). Each output row now blends its displacement with the
+  neighbouring depth row by distance to the row centres. Vertically constant
+  depth gives byte-identical output to rc7; an independent per-pixel oracle
+  covers luma/chroma, Q2–Q4 and worker partitions.
+- **144 Hz:** in Pilot 2.0 OSD «Игра — 144 Гц» is the 5th *display mode* item,
+  not a quick-button function; the OSD hides it on One Pro without asking the
+  controller. The EXP144 hot-key edit is therefore inert.
+
 ## Experimental variant `-EXP144` (opt-in)
 
 Same adapter, plus exact text edits in `pilot/conf/pilot_default_config.json`

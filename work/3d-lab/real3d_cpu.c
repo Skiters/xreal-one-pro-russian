@@ -186,10 +186,17 @@ static void sample_cell2(u8 *dst, const u8 *src, u32 frac) {
  * depth sample covers four luma pixels or two chroma pixels.  Process a
  * complete depth cell at once so that division and disparity calculation
  * are not repeated for every output pixel. */
-static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
-                                  u32 width, u32 height, u32 src_stride,
-                                  u32 dst_stride, u32 depth_width,
-                                  u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+/* smooth=0 is the rc7 behaviour: one displacement per depth row, so a
+ * depth step moves a whole 4-row (luma) / 2-row (chroma) band and slanted
+ * object edges show a staircase. smooth=1 blends each output row's
+ * displacement with the neighbouring depth row by distance to the row
+ * centres (weights 1/8, 3/8 for luma; 1/4 for chroma), clamped at the top
+ * and bottom. Horizontal cells and per-cell sampling stay unchanged. */
+static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
+                                 u32 width, u32 height, u32 src_stride,
+                                 u32 dst_stride, u32 depth_width,
+                                 u32 depth_height, u32 begin, u32 end,
+                                 u32 fractional_bits, int smooth) {
     if (fractional_bits < 2 || fractional_bits > 4 ||
         !depth_width || !depth_height || !width || !height ||
         !src || !dst || !depth || src_stride < width || dst_stride < width) return -22;
@@ -199,13 +206,32 @@ static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
         width % depth_width || height % depth_height ||
         begin > end || end > depth_height) return -22;
     if (depth_width > 480) return -22;
+    u32 den_shift = rows == 4 ? 3 : rows == 2 ? 2 : 0;
+    if (smooth && !den_shift) return -22;
     for (u32 zy = begin; zy < end; ++zy) {
         const u8 *z = depth + (size_t)zy * depth_width;
-        u16 source_x[480];
-        for (u32 zx = 0; zx < depth_width; ++zx)
-            source_x[zx] = (u16)(zx * pixels * 32 +
-                depth_shift(z[zx], width, depth_width, fractional_bits));
+        const u8 *up = depth + (size_t)(zy ? zy - 1 : zy) * depth_width;
+        const u8 *down = depth + (size_t)(zy + 1 < depth_height ? zy + 1 : zy) * depth_width;
+        u16 source_x[480], here[480], above[480], below[480];
+        for (u32 zx = 0; zx < depth_width; ++zx) {
+            here[zx] = (u16)depth_shift(z[zx], width, depth_width, fractional_bits);
+            source_x[zx] = (u16)(zx * pixels * 32 + here[zx]);
+            if (smooth) {
+                above[zx] = (u16)depth_shift(up[zx], width, depth_width, fractional_bits);
+                below[zx] = (u16)depth_shift(down[zx], width, depth_width, fractional_bits);
+            }
+        }
         for (u32 ry = 0; ry < rows; ++ry) {
+            if (smooth) {
+                /* Offset of this row's centre from the depth row's centre,
+                 * in units of 1/(2*rows) depth rows. Never zero for even rows. */
+                int num = 2 * (int)ry + 1 - (int)rows;
+                const u16 *other = num < 0 ? above : below;
+                u32 w = (u32)(num < 0 ? -num : num), den = 2 * rows;
+                for (u32 zx = 0; zx < depth_width; ++zx)
+                    source_x[zx] = (u16)(zx * pixels * 32 +
+                        ((here[zx] * (den - w) + other[zx] * w + rows) >> den_shift));
+            }
             u32 y = zy * rows + ry;
             const u8 *s = src + (size_t)y * src_stride;
             u8 *d = dst + (size_t)y * dst_stride;
@@ -231,6 +257,22 @@ static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
     return 0;
 }
 
+static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
+                                  u32 width, u32 height, u32 src_stride,
+                                  u32 dst_stride, u32 depth_width,
+                                  u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 0);
+}
+
+static int warp_plane_cells_smooth_range(const u8 *src, u8 *dst, const u8 *depth,
+                                         u32 width, u32 height, u32 src_stride,
+                                         u32 dst_stride, u32 depth_width,
+                                         u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 1);
+}
+
 static int warp_plane_cells(const u8 *src, u8 *dst, const u8 *depth,
                             u32 width, u32 height, u32 src_stride,
                             u32 dst_stride, u32 depth_width,
@@ -253,7 +295,7 @@ static void *segment_worker(void *arg) {
     struct segment_job *j = arg;
     j->rc = 0;
     for (u32 channel = 0; channel < 3; ++channel) {
-        j->rc = warp_plane_cells_range(j->src[channel], j->dst[channel],
+        j->rc = warp_plane_cells_smooth_range(j->src[channel], j->dst[channel],
                                         j->depth, j->width[channel],
                                         j->height[channel], j->src_stride[channel],
                                         j->dst_stride[channel], j->depth_width,
@@ -552,4 +594,13 @@ int real3d_warp_cells_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
     return warp_plane_cells_range(src, dst, depth, width, height,
                                   src_stride, dst_stride, depth_width,
                                   depth_height, begin, end, fractional_bits);
+}
+
+int real3d_warp_cells_smooth_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                                            u32 width, u32 height, u32 src_stride,
+                                            u32 dst_stride, u32 depth_width,
+                                            u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_smooth_range(src, dst, depth, width, height,
+                                         src_stride, dst_stride, depth_width,
+                                         depth_height, begin, end, fractional_bits);
 }

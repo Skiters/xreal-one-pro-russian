@@ -26,7 +26,14 @@ def main():
     dense_run.argtypes = [C.POINTER(C.c_uint64), *[C.POINTER(C.c_ubyte)]*3, *[C.c_uint]*5]
     run = lib.xreal_compact_rgb_lut
     run.argtypes = [C.POINTER(C.c_uint32), *[C.POINTER(C.c_ubyte)]*3, *[C.c_uint]*5]
+    lib.xreal_compact2_table_bytes.restype = C.c_uint64
+    build2 = lib.xreal_build_compact2_table_range
+    build2.argtypes = build.argtypes
+    run2 = lib.xreal_compact2_rgb_lut
+    run2.argtypes = run.argtypes
     assert lib.xreal_compact_table_bytes() == (17*17*256+512)*4
+    assert lib.xreal_compact2_table_bytes() == (17*17*256+512)*4
+    table2 = (C.c_uint32*(lib.xreal_compact2_table_bytes()//4))()
     dense = (C.c_uint64*(lib.xreal_rgb_table_bytes()//8))()
     table = (C.c_uint32*(lib.xreal_compact_table_bytes()//4))()
     rng = random.Random(20261110)
@@ -44,6 +51,7 @@ def main():
         # Build in uneven ranges, as the adapter's workers do.
         for begin, end in ((0, 4), (4, 9), (9, 13), (13, 17)):
             assert build(data, table, begin, end) == 0
+            assert build2(data, table2, begin, end) == 0
         assert build_dense(data, dense, 0, 17) == 0
         width, height = 1009, 6
         pitches = [1019, 1031, 1049]
@@ -55,13 +63,17 @@ def main():
                    for _ in range(width*height-len(pixels))]
         planes = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         twins = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
+        thirds = [(C.c_ubyte*(s*height))(*([171]*(s*height))) for s in pitches]
         for i, rgb in enumerate(pixels):
             y, x = divmod(i, width)
             for c in range(3):
                 planes[c][y*pitches[c]+x] = rgb[c]
                 twins[c][y*pitches[c]+x] = rgb[c]
+                thirds[c][y*pitches[c]+x] = rgb[c]
         assert run(table, *planes, *pitches, width, height) == 0
         assert dense_run(dense, *twins, *pitches, width, height) == 0
+        assert run2(table2, *thirds, *pitches, width, height) == 0
+        assert [bytes(x) for x in thirds] == [bytes(x) for x in planes], 'compact2 must equal compact'
         error = against_dense = 0
         for i, rgb in enumerate(pixels):
             y, x = divmod(i, width)
@@ -78,6 +90,7 @@ def main():
         previous = [bytes(x) for x in planes]
         for w, h, rs in [(0, 4, 1019), (1921, 1, 2000), (1009, 1081, 1019), (1009, 4, 1008)]:
             assert run(table, *planes, rs, pitches[1], pitches[2], w, h) == -22
+            assert run2(table2, *planes, rs, pitches[1], pitches[2], w, h) == -22
             assert [bytes(x) for x in planes] == previous
         report[name] = {'max_error_vs_float': error, 'max_diff_vs_dense_kernel': against_dense}
     print(json.dumps({'pixels_per_cube': width*height, 'cubes': report}))
