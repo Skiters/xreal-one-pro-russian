@@ -154,6 +154,11 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         u16 cube[14739];
         for(u32 i=0;i<4913;i++)for(u32 c=0;c<3;c++)
             cube[i*3+c]=(u16)p[c*4913+i]*256;
+        {   /* Identifies which cube Pilot loaded (e.g. a softened AI HDR table). */
+            u32 h=2166136261u;
+            for(u32 i=0;i<14739;i++)h=(h^p[i])*16777619u;
+            trace("LUT fnv1a32",a->lut,14739,(long)h);
+        }
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;

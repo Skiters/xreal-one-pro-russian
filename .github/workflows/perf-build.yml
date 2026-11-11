@@ -65,7 +65,7 @@ jobs:
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/exp/libxreal_cpu_adapter.so
           # Movie-first variant: AI HDR and 2D->3D at a 30 Hz source, shown 3x at 90 Hz.
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
-            --output outputs/cinema --tag "$TAG" --experimental --cinema
+            --output outputs/cinema --tag "$TAG" --experimental --cinema --hdr-strength 60
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/cinema/libxreal_cpu_adapter.so
 
       - name: ARM64 tests on the shipped adapter

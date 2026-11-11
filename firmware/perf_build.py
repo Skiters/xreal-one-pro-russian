@@ -54,7 +54,33 @@ FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib', '
 CONFIG = 'pilot/conf/pilot_default_config.json'
 
 
-def experimental(files, cinema=False):
+AIHDR_CUBE = 'pilot/resource/lut_3d_ai_hdr.cube'
+
+
+def soften_cube(text, strength):
+    """Blend the AI HDR cube with the identity: out = id + strength*(cube-id).
+    Keeps the header, size and R-fastest order; strength in (0, 1]."""
+    out, index = [], 0
+    for line in text.splitlines():
+        parts = line.split()
+        try:
+            values = [float(v) for v in parts] if len(parts) == 3 else None
+        except ValueError:
+            values = None
+        if values is None:
+            out.append(line)
+            continue
+        r, g, b = index % 17, index // 17 % 17, index // 289
+        ident = (r/16, g/16, b/16)
+        out.append(' '.join(f'{min(1.0, max(0.0, i + (v - i)*strength)):.6f}'
+                            for v, i in zip(values, ident)))
+        index += 1
+    if index != 4913:
+        raise ValueError(f'Expected 4913 cube rows, found {index}')
+    return '\n'.join(out) + '\n'
+
+
+def experimental(files, cinema=False, hdr_strength=100):
     """Opt-in variant (-HDR60-UI), One Pro only:
     1. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
        because their frames are processed on the CPU.
@@ -96,6 +122,13 @@ def experimental(files, cinema=False):
         config = config.replace(old, new)
         edits.append(f'{CONFIG} dp.synth_stereo (2D->3D): 1920_1080_60 -> 1920_1080_30')
     files[CONFIG] = config.encode('utf-8')
+    changed_extra = []
+    if hdr_strength != 100:
+        if not 10 <= hdr_strength < 100:
+            raise ValueError('hdr_strength must be 10..99 percent')
+        files[AIHDR_CUBE] = soften_cube(files[AIHDR_CUBE].decode('utf-8'), hdr_strength/100).encode()
+        changed_extra.append(AIHDR_CUBE)
+        edits.append(f'{AIHDR_CUBE}: blended with identity at {hdr_strength}% strength')
     from ui_fast import apply as ui_fast_apply
     before = set(files)
     ui = ui_fast_apply(files, 'one-pro')  # rewrites CONFIG after the 60 Hz edit
@@ -105,7 +138,7 @@ def experimental(files, cinema=False):
     validate_config(files[CONFIG], CONFIG)
     if 'refresh_timer_ms' not in ui or ui['refresh_timer_ms'] != 16:
         raise ValueError('Unexpected ui_fast result')
-    return [CONFIG, 'pilot/bin/libnr_osd.so'] + removed, edits
+    return [CONFIG, 'pilot/bin/libnr_osd.so'] + changed_extra + removed, edits
 
 
 def sha(data):
@@ -253,7 +286,7 @@ def build(args):
               'abi': abi_report})
     changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
     if args.experimental:
-        changed, edits = experimental(files, cinema=args.cinema)
+        changed, edits = experimental(files, cinema=args.cinema, hdr_strength=args.hdr_strength)
         changed_expected += changed
         manifest['perf']['experimental'] = {
             'edits': edits,
@@ -276,7 +309,7 @@ def build(args):
     packed = bytearray(rc7[:64] + stream.getvalue().translate(XOR))
     packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
     packed[:4] = container_crc(packed).to_bytes(4, 'little')
-    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{("-CINEMA30-UI" if args.cinema else "-HDR60-UI") if args.experimental else ""}.bin'
+    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{("-CINEMA30-UI" if args.cinema else "-HDR60-UI") + (f"-HDR{args.hdr_strength}" if args.hdr_strength != 100 else "") if args.experimental else ""}.bin'
     target = out/name
     target.write_bytes(packed)
 
@@ -315,6 +348,8 @@ if __name__ == '__main__':
                    default=ROOT/'outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin')
     p.add_argument('--output', type=Path, default=ROOT/'outputs/perf')
     p.add_argument('--tag', default='perf1')
+    p.add_argument('--hdr-strength', type=int, default=100,
+                   help='With --experimental: AI HDR cube strength in percent (blend with identity)')
     p.add_argument('--cinema', action='store_true',
                    help='With --experimental: 30 Hz source (90 Hz OLED, 3x) for AI HDR/Reading/Movie/2D->3D')
     p.add_argument('--experimental', action='store_true',

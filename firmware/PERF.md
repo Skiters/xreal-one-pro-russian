@@ -149,6 +149,11 @@ frame exactly 3 times (Reading stays 60 Hz, Movie rc7). With ~18 ms (AI HDR) / ~
 30 Hz cadence (1-1-1-2) instead of an irregular one. Everything else as
 `-HDR60-UI`.
 
+The CI build also passes `--hdr-strength 60`: `lut_3d_ai_hdr.cube` is blended
+with the identity at 60% (mid grey 128 -> 142 instead of 150, less
+saturation), because the full table looked over-bright to the owner. The
+adapter logs `LUT fnv1a32` at init to show which cube Pilot loaded.
+
 ## Variant `-HDR60-UI` (opt-in, One Pro)
 
 Adds upstream's UI experiment (`firmware/ui_fast.py`): exact rc7 OSD refresh
