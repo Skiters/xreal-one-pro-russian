@@ -693,7 +693,9 @@ int xreal_real3d_rpc(u32 core, const struct rpc *call, u32 sync) {
         ++frames;
         int status = set_result(f->result, 0);
         if (pace_last_start) {
-            u64 elapsed = monotonic_us() - pace_last_start;
+            /* perf10 fix: from THIS call's start (perf9 used the previous
+             * call's start, which let every other frame through unpaced). */
+            u64 elapsed = monotonic_us() - call_start;
             if (elapsed < PACE_US) {
                 u64 wait = PACE_US - elapsed;
                 struct timespec t = { (long)(wait / 1000000ULL), (long)(wait % 1000000ULL) * 1000 };

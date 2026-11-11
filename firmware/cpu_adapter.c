@@ -228,7 +228,10 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     long call_start_us=now_us();
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
     struct timespec before,converted,flushed;
-    int kernel=choice>=0 ? choice : 2+(int)(frame_count%2);
+    /* perf10: compact16 only. blocks (v1 39 ms, v2 23.2 ms vs 13.1 ms) lost
+     * on the device both times; it stays in lut_fast.c with its tests. */
+    if(choice<0)choice=2;
+    int kernel=choice;
     clock_gettime(1,&before);
     rc=rgb_parallel(dense,compact,kernel,planes,a->strides,a->width,a->height);
     clock_gettime(1,&converted);
@@ -293,8 +296,11 @@ done:
         if(!pacing && pace_ema_us>PACE_ON_US)pacing=1;
         else if(pacing && pace_ema_us<PACE_OFF_US)pacing=0;
         if(pacing!=was)trace(pacing ? "perf9 pacing on (even 30/s), busy ema us" : "perf9 pacing off (60/s), busy ema us",0,frame_count,pace_ema_us);
-        if(pacing && pace_last_start_us) {
-            long wait=PACE_US-(now_us()-pace_last_start_us);
+        if(pacing) {
+            /* perf10 fix: measure from THIS call's start. perf9 measured from
+             * the previous call's start, so only every other frame slept and
+             * the rate stayed ~45-57 instead of an even 30. */
+            long wait=PACE_US-(now_us()-call_start_us);
             if(wait>0){struct timespec t={wait/1000000L,(wait%1000000L)*1000L};nanosleep(&t,(struct timespec *)0);}
         }
     }

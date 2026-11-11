@@ -138,6 +138,15 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf10
+
+perf9 on the device: compact16 ran 60.0 frames/s at ~11 ms on lighter
+scenes; on heavier ones (15–22 ms) pacing switched on but the rate stayed
+45–57 because the wait was measured from the previous call's start (only
+every other frame slept). Both AI HDR and Real3D now measure from the
+current call's start. blocks v2 lost on the device (23.2 vs 13.1 ms); AI HDR
+uses compact16 without tuning.
+
 ## perf9
 
 - **blocks v2 (NEON):** two 4x2 tiles per step; smoothness via vector
