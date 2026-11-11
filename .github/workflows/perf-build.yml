@@ -27,6 +27,14 @@ jobs:
 
       - name: Toolchain
         run: |
+          # Use the main Ubuntu archive (and a second public mirror) instead of
+          # the runner's default azure.archive.ubuntu.com, which failed to
+          # resolve; apt's mirror+file method tries them in order.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf 'http://archive.ubuntu.com/ubuntu/\thttp://mirrors.edge.kernel.org/ubuntu/\n' | tr '\t' '\n' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           # Retry: runner DNS to the Ubuntu mirror fails intermittently.
           for i in 1 2 3 4 5; do
             sudo apt-get update -qq && sudo apt-get install -y -qq clang lld && break
