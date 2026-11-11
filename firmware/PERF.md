@@ -138,6 +138,23 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf7 / perf8
+
+- **AI HDR `blocks` kernel:** compact16 plus smooth 2x2 reuse
+  (out = LUT(mean) + pixel offset) on 4x2 tiles where every channel is within
+  4 levels; within 2 levels of the float reference (1 on Movie), identity
+  exact, NEON equals portable. ~95–100% of tiles are smooth on film-like
+  synthetic content, 0% on grain/noise (exact path). Autotune compact16 vs
+  blocks; smooth-tile share logged every 300 frames.
+- **Flinger `synth_stereo_60fps=false`** (via `conf/sdk_global.json`, which
+  Pilot copies to `/tmp`): parsed on device, but 3D stayed ~48 frames/s on the
+  90 Hz OLED; only the target offset moved. Builds now ship the default.
+- **Real3D frame pacing (perf8):** 48 frames/s on a 90 Hz panel mixes 1 and 2
+  refreshes per frame. The Process RPC now returns no earlier than 32.8 ms
+  after the previous call started, so 2D->3D locks onto every second 60 Hz
+  source frame: 30 frames/s, each shown 3 refreshes. Uses `nanosleep`
+  (added to `abi_imports.json`). Logged as `Real3D CPU pace ...`.
+
 ## Variant `-CINEMA30-UI` (does NOT work on One Pro)
 
 Tested on X1112011: selecting AI HDR made Pilot request EDID 11

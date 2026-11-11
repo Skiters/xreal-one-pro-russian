@@ -24,6 +24,16 @@ extern int pthread_create(u64 *, const void *, void *(*)(void *), void *);
 extern int pthread_join(u64, void **);
 struct timespec { long sec, nsec; };
 extern int clock_gettime(int, struct timespec *);
+extern int nanosleep(const struct timespec *, struct timespec *);
+
+/* perf8 frame pacing. Pilot's 2D->3D path delivers ~48 frames/s, which the
+ * 90 Hz OLED shows as an irregular mix of 1 and 2 refreshes (judder). Each
+ * Process call now returns no earlier than PACE_US after the previous call
+ * began, slightly under two 60 Hz source frames, so the pipeline locks onto
+ * every second source frame: 30 frames/s, each shown exactly 3 refreshes.
+ * The warp itself is unchanged (it finishes in ~15 ms). */
+#define PACE_US 32800ULL
+static u64 pace_last_start, pace_slept_us, pace_late;
 
 extern void *ar_hal_sys_mmap_cache(u64, u32);
 extern int ar_hal_sys_munmap(void *, u32);
@@ -648,6 +658,7 @@ int xreal_real3d_rpc(u32 core, const struct rpc *call, u32 sync) {
         int rc = set_result(result, 0);
         initialized = rc == 0;
         frames = 0;
+        pace_last_start = pace_slept_us = pace_late = 0;
         diagnostic("init", NULL, rc);
         return rc;
     }
@@ -662,6 +673,7 @@ int xreal_real3d_rpc(u32 core, const struct rpc *call, u32 sync) {
     if (!strcmp(call->name, "ArArmWarp2DTo3DProcess")) {
         if (call->length != sizeof(struct real3d_frame)) return -22;
         const struct real3d_frame *f = call->args;
+        u64 call_start = monotonic_us();
         int rc = process_frame(f);
         if (rc || frames < 3 || frames % 300 == 0) {
 #ifdef XREAL_COMPARE_ONEPRO_WARP
@@ -679,7 +691,31 @@ int xreal_real3d_rpc(u32 core, const struct rpc *call, u32 sync) {
             return rc;
         }
         ++frames;
-        return set_result(f->result, 0);
+        int status = set_result(f->result, 0);
+        if (pace_last_start) {
+            u64 elapsed = monotonic_us() - pace_last_start;
+            if (elapsed < PACE_US) {
+                u64 wait = PACE_US - elapsed;
+                struct timespec t = { (long)(wait / 1000000ULL), (long)(wait % 1000000ULL) * 1000 };
+                (void)nanosleep(&t, NULL);
+                pace_slept_us += wait;
+            } else {
+                ++pace_late;
+            }
+        }
+        pace_last_start = call_start;
+        if (frames % 300 == 0) {
+            char line[160];
+            int n = snprintf(line, sizeof(line), "Real3D CPU pace frame=%u slept_avg_us=%lu late=%lu target_us=%lu\n",
+                             frames, (unsigned long)(pace_slept_us / 300), (unsigned long)pace_late,
+                             (unsigned long)PACE_US);
+            pace_slept_us = pace_late = 0;
+            if (n > 0 && n < (int)sizeof(line)) {
+                int fd = open("/usrdata/real3d-cpu.log", 1 | 64 | 1024, 0600);
+                if (fd >= 0) { (void)write(fd, line, (size_t)n); (void)close(fd); }
+            }
+        }
+        return status;
     }
     return -95;
 }

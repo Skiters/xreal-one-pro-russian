@@ -177,15 +177,15 @@ def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None, synth30=F
         changed_extra.append(AIHDR_CUBE)
         edits.append(f'{AIHDR_CUBE}: re-graded, colour {hdr_strength}%, tone {tone}%, '
                      'skin colour boost halved, dark-grey tint removed')
-    if synth30:
-        # Pilot reads module debug options from sdk_global.json; Flinger parses
-        # "synth_stereo_60fps" (default true) for the 2D->3D presentation rate.
-        # Experiment: ask for its 30 fps cadence so 3D frames are evenly paced.
-        if SDK_GLOBAL in files:
-            raise ValueError('rc7 unexpectedly ships sdk_global.json')
-        files[SDK_GLOBAL] = (json.dumps({'flinger': {'synth_stereo_60fps': False}},
-                                        indent=2) + '\n').encode()
-        edits.append(f'{SDK_GLOBAL}: new, flinger.synth_stereo_60fps=false (experiment)')
+    # Pilot copies conf/sdk_global.json to /tmp at boot; Flinger parses
+    # "synth_stereo_60fps". false was tried on device (perf7): it only moved
+    # Flinger's target offset (8 -> 13 ms), 3D stayed ~48 frames/s. Ship the
+    # explicit default so a file left by that build cannot keep the setting.
+    if SDK_GLOBAL in files:
+        raise ValueError('rc7 unexpectedly ships sdk_global.json')
+    files[SDK_GLOBAL] = (json.dumps({'flinger': {'synth_stereo_60fps': not synth30}},
+                                    indent=2) + '\n').encode()
+    edits.append(f'{SDK_GLOBAL}: flinger.synth_stereo_60fps={str(not synth30).lower()}')
     from ui_fast import apply as ui_fast_apply
     before = set(files)
     ui = ui_fast_apply(files, 'one-pro')  # rewrites CONFIG after the 60 Hz edit
