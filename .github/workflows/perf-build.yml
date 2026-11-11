@@ -27,8 +27,12 @@ jobs:
 
       - name: Toolchain
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld
+          # Retry: runner DNS to the Ubuntu mirror fails intermittently.
+          for i in 1 2 3 4 5; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq clang lld && break
+            echo "apt attempt $i failed, retrying"; sleep 30
+          done
+          command -v clang && command -v ld.lld
           clang --version | head -1
           ld.lld --version
           python -m pip install -q -r firmware/test-requirements.txt capstone==5.0.3
