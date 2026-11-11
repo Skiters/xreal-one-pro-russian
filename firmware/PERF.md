@@ -149,10 +149,15 @@ frame exactly 3 times (Reading stays 60 Hz, Movie rc7). With ~18 ms (AI HDR) / ~
 30 Hz cadence (1-1-1-2) instead of an irregular one. Everything else as
 `-HDR60-UI`.
 
-The CI build also passes `--hdr-strength 60`: `lut_3d_ai_hdr.cube` is blended
-with the identity at 60% (mid grey 128 -> 142 instead of 150, less
-saturation), because the full table looked over-bright to the owner. The
-adapter logs `LUT fnv1a32` at init to show which cube Pilot loaded.
+The CI build also re-grades `lut_3d_ai_hdr.cube` (`--hdr-strength 60
+--hdr-tone 35`), because the full table looked over-bright to the owner:
+each node's vendor change is split into Rec.709 luma and chroma; 35% of the
+brightness change and 60% of the colour change are kept, skin-like hues get
+half of that colour boost (soft mask), and the violet tint the vendor cube
+puts on dark greys (grey 16 -> 10/8/12) is removed. Result: mid grey 128 ->
+136 (vendor 150), grey 32 -> 28 (vendor 19, tinted), greys neutral and
+monotonic, black 0, no non-monotonic steps, smoother than the vendor cube.
+The adapter logs `LUT fnv1a32` at init to show which cube Pilot loaded.
 
 ## Variant `-HDR60-UI` (opt-in, One Pro)
 

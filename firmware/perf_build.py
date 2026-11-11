@@ -57,30 +57,72 @@ CONFIG = 'pilot/conf/pilot_default_config.json'
 AIHDR_CUBE = 'pilot/resource/lut_3d_ai_hdr.cube'
 
 
-def soften_cube(text, strength):
-    """Blend the AI HDR cube with the identity: out = id + strength*(cube-id).
-    Keeps the header, size and R-fastest order; strength in (0, 1]."""
-    out, index = [], 0
-    for line in text.splitlines():
+def _smooth(edge0, edge1, x):
+    t = min(1.0, max(0.0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3 - 2*t)
+
+
+def soften_cube(text, strength, neutral_greys=True, tone=None, skin=0.5):
+    """Re-grade the vendor AI HDR cube (owner found it over-bright).
+    Each node's vendor change is split into luma (Rec.709) and chroma:
+      tone   share of the luma change kept (None: same as strength),
+      strength share of the chroma change kept,
+      skin   extra factor on the chroma change for skin-like hues (soft mask
+             over hue/saturation/lightness, no hard edges).
+    neutral_greys: the vendor cube tints dark greys violet (grey 16 -> RGB
+    10/8/12); remove each grey node's tint, scaled by how neutral a node is.
+    Keeps the header, size and R-fastest order."""
+    import colorsys
+    tone = strength if tone is None else tone
+    lines, rows, slots = text.splitlines(), [], []
+    for n, line in enumerate(lines):
         parts = line.split()
         try:
             values = [float(v) for v in parts] if len(parts) == 3 else None
         except ValueError:
             values = None
-        if values is None:
-            out.append(line)
-            continue
-        r, g, b = index % 17, index // 17 % 17, index // 289
-        ident = (r/16, g/16, b/16)
-        out.append(' '.join(f'{min(1.0, max(0.0, i + (v - i)*strength)):.6f}'
-                            for v, i in zip(values, ident)))
-        index += 1
-    if index != 4913:
-        raise ValueError(f'Expected 4913 cube rows, found {index}')
-    return '\n'.join(out) + '\n'
+        if values is not None:
+            slots.append(n)
+            rows.append(values)
+    if len(rows) != 4913:
+        raise ValueError(f'Expected 4913 cube rows, found {len(rows)}')
+    for index, v in enumerate(rows):
+        i = (index % 17 / 16, index // 17 % 17 / 16, index // 289 / 16)
+        yi = 0.2126*i[0] + 0.7152*i[1] + 0.0722*i[2]
+        yv = 0.2126*v[0] + 0.7152*v[1] + 0.0722*v[2]
+        h, l, sat = colorsys.rgb_to_hls(*i)
+        hue = h * 360
+        hue = hue - 360 if hue > 180 else hue          # -180..180, skin ~ 0..50
+        mask = (_smooth(-25, -5, hue) * (1 - _smooth(45, 65, hue)) *
+                _smooth(0.05, 0.15, sat) * (1 - _smooth(0.7, 0.9, sat)) *
+                _smooth(0.1, 0.2, l) * (1 - _smooth(0.85, 0.95, l)))
+        k = strength * (1 - (1 - skin) * mask)
+        y = yi + tone*(yv - yi)
+        rows[index] = [y + (i[c] - yi) + k*((v[c] - yv) - (i[c] - yi)) for c in range(3)]
+    if neutral_greys:
+        tint = []
+        for k in range(17):
+            grey = rows[k*(1 + 17 + 289)]
+            mean = sum(grey) / 3
+            tint.append([c - mean for c in grey])
+        for index, values in enumerate(rows):
+            node = (index % 17, index // 17 % 17, index // 289)
+            hi, lo = max(node), min(node)
+            weight = 1.0 - (hi - lo) / hi if hi else 1.0
+            k = round(sum(node) / 3)
+            rows[index] = [v - weight*t for v, t in zip(values, tint[k])]
+    rows = [[min(1.0, max(0.0, v)) for v in r] for r in rows]
+    # Sanity: greys stay neutral and monotonic, black stays black.
+    greys = [rows[k*307] for k in range(17)]
+    if any(max(g) - min(g) > 1/255 for g in greys) or any(
+            sum(b) < sum(a) for a, b in zip(greys, greys[1:])) or max(greys[0]) > 0:
+        raise ValueError('Re-graded cube: grey axis not neutral/monotonic')
+    for n, values in zip(slots, rows):
+        lines[n] = ' '.join(f'{v:.6f}' for v in values)
+    return '\n'.join(lines) + '\n'
 
 
-def experimental(files, cinema=False, hdr_strength=100):
+def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None):
     """Opt-in variant (-HDR60-UI), One Pro only:
     1. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
        because their frames are processed on the CPU.
@@ -126,9 +168,12 @@ def experimental(files, cinema=False, hdr_strength=100):
     if hdr_strength != 100:
         if not 10 <= hdr_strength < 100:
             raise ValueError('hdr_strength must be 10..99 percent')
-        files[AIHDR_CUBE] = soften_cube(files[AIHDR_CUBE].decode('utf-8'), hdr_strength/100).encode()
+        tone = hdr_strength if hdr_tone is None else hdr_tone
+        files[AIHDR_CUBE] = soften_cube(files[AIHDR_CUBE].decode('utf-8'), hdr_strength/100,
+                                        tone=tone/100).encode()
         changed_extra.append(AIHDR_CUBE)
-        edits.append(f'{AIHDR_CUBE}: blended with identity at {hdr_strength}% strength')
+        edits.append(f'{AIHDR_CUBE}: re-graded, colour {hdr_strength}%, tone {tone}%, '
+                     'skin colour boost halved, dark-grey tint removed')
     from ui_fast import apply as ui_fast_apply
     before = set(files)
     ui = ui_fast_apply(files, 'one-pro')  # rewrites CONFIG after the 60 Hz edit
@@ -286,7 +331,8 @@ def build(args):
               'abi': abi_report})
     changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
     if args.experimental:
-        changed, edits = experimental(files, cinema=args.cinema, hdr_strength=args.hdr_strength)
+        changed, edits = experimental(files, cinema=args.cinema, hdr_strength=args.hdr_strength,
+                                      hdr_tone=args.hdr_tone)
         changed_expected += changed
         manifest['perf']['experimental'] = {
             'edits': edits,
@@ -350,6 +396,8 @@ if __name__ == '__main__':
     p.add_argument('--tag', default='perf1')
     p.add_argument('--hdr-strength', type=int, default=100,
                    help='With --experimental: AI HDR cube strength in percent (blend with identity)')
+    p.add_argument('--hdr-tone', type=int, default=None,
+                   help='With --hdr-strength: share of the AI HDR brightness change kept, percent')
     p.add_argument('--cinema', action='store_true',
                    help='With --experimental: 30 Hz source (90 Hz OLED, 3x) for AI HDR/Reading/Movie/2D->3D')
     p.add_argument('--experimental', action='store_true',
