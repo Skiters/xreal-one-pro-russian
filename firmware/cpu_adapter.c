@@ -2,6 +2,9 @@
  * No DSP power, clocks or SRAM changes. Unsupported RPCs fail explicitly.
  */
 #include "runtime.h"
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+#include <arm_neon.h>
+#endif
 typedef unsigned long u64;
 typedef unsigned int u32;
 typedef unsigned short u16;
@@ -157,48 +160,60 @@ static int rgb_parallel(const u64 *table,const u32 *small,int kernel,u8 *planes[
     return 0;
 }
 
-/* perf11 repeated-frame reuse. A 24 fps film in a 60 Hz signal repeats each
- * frame 3 or 2 times (60% exact repeats). Every frame's rows are hashed
- * (64-bit per row and plane, all pixels); when all hashes equal the previous
- * frame's, the previous AI HDR output is copied instead of re-converting, so
- * every source frame keeps up and film keeps its native 3:2 cadence.
- * Copies are kept only while repeats occur (>= 10% of the last 120 frames). */
-struct dd_job {u8 *planes[3]; u8 *out[3]; u32 strides[3], w, h, y0, y1; u64 *hash; int mode;};
-static u64 *dd_hash[2]; static u8 *dd_out[3]; static u32 dd_w, dd_h; static int dd_cur, dd_prev_valid, dd_have_copy, dd_keep=1;
+/* perf12 repeated-frame reuse with tolerance. A 24 fps film in a 60 Hz
+ * signal repeats frames 3:2, but macOS temporally dithers 8-bit external
+ * outputs, so repeats differ by +-1 in the low bit (perf11's exact hashes
+ * found 0 repeats on a film). A frame counts as a repeat when EVERY pixel of
+ * every plane is within DD_TOL of the previous input; motion anywhere (even a
+ * subtitle) exceeds it and is converted normally. A repeat gets the kept
+ * output of the previous frame (differs from a fresh conversion by at most
+ * the cube slope times DD_TOL, ~2-3 levels). The compare stops at the first
+ * difference. Copies are kept only while repeats occur (>= 10% of 120). */
+#define DD_TOL 2
+struct dd_job {u8 *planes[3]; u8 *in[3]; u8 *out[3]; u32 strides[3], w, y0, y1; int mode, differ;};
+static u8 *dd_in[3], *dd_out[3]; static u32 dd_w, dd_h; static int dd_prev_valid, dd_have_copy, dd_keep=1;
 static u32 dd_window, dd_window_repeats, dd_repeats, dd_served, dd_hist[6];
 static long dd_last_call_us;
+static int dd_row_differs(const u8 *a,const u8 *b,u32 w) {
+    u32 x=0;
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+    for(;x+16<=w;x+=16) {
+        uint8x16_t d=vabdq_u8(vld1q_u8(a+x),vld1q_u8(b+x));
+        if(vmaxvq_u8(d)>DD_TOL)return 1;
+    }
+#endif
+    for(;x<w;x++){int d=(int)a[x]-(int)b[x];if(d>DD_TOL||d<-DD_TOL)return 1;}
+    return 0;
+}
 static void *dd_worker(void *arg) {
     struct dd_job *j=arg;
     for(u32 c=0;c<3;c++)for(u32 y=j->y0;y<j->y1;y++) {
-        u8 *row=j->planes[c]+(u64)y*j->strides[c], *keep=j->out[c] ? j->out[c]+(u64)y*j->w : (u8 *)0;
-        if(j->mode==0) {
-            u64 h=0x9e3779b97f4a7c15ULL^((u64)c<<32|y);u32 x=0;
-            for(;x+8<=j->w;x+=8){u64 v;__builtin_memcpy(&v,row+x,8);h=(h^v)*0xff51afd7ed558ccdULL;h^=h>>29;}
-            for(;x<j->w;x++)h=(h^row[x])*0x100000001b3ULL;
-            j->hash[c*j->h+y]=h;
-        } else if(j->mode==1) __builtin_memcpy(row,keep,j->w);   /* previous output -> frame */
-        else __builtin_memcpy(keep,row,j->w);                         /* frame -> kept output */
+        u8 *row=j->planes[c]+(u64)y*j->strides[c];
+        u64 off=(u64)y*j->w;
+        if(j->mode==0){if(dd_row_differs(row,j->in[c]+off,j->w)){j->differ=1;return (void *)0;}}
+        else if(j->mode==1) __builtin_memcpy(row,j->out[c]+off,j->w);   /* kept output -> frame */
+        else if(j->mode==2) __builtin_memcpy(j->out[c]+off,row,j->w);   /* frame -> kept output */
+        else __builtin_memcpy(j->in[c]+off,row,j->w);                   /* frame -> kept input */
     }
     return (void *)0;
 }
-static void dd_run(u8 *planes[3],const u32 strides[3],u32 w,u32 h,int mode,u64 *hash) {
+static int dd_run(u8 *planes[3],const u32 strides[3],u32 w,u32 h,int mode) {
     struct dd_job jobs[4];
-    for(u32 i=0;i<4;i++) {
-        jobs[i]=(struct dd_job){{planes[0],planes[1],planes[2]},{dd_out[0],dd_out[1],dd_out[2]},
-                                {strides[0],strides[1],strides[2]},w,h,h*i/4,h*(i+1)/4,hash,mode};
-    }
+    for(u32 i=0;i<4;i++)
+        jobs[i]=(struct dd_job){{planes[0],planes[1],planes[2]},{dd_in[0],dd_in[1],dd_in[2]},{dd_out[0],dd_out[1],dd_out[2]},
+                                {strides[0],strides[1],strides[2]},w,h*i/4,h*(i+1)/4,mode,0};
     xreal_parallel_run(dd_worker,jobs,sizeof(jobs[0]),4);
+    int differ=0;for(u32 i=0;i<4;i++)differ|=jobs[i].differ;
+    return differ;
 }
 static void dd_reset(void) {
-    for(u32 i=0;i<2;i++){free(dd_hash[i]);dd_hash[i]=(u64 *)0;}
-    for(u32 c=0;c<3;c++){free(dd_out[c]);dd_out[c]=(u8 *)0;}
+    for(u32 c=0;c<3;c++){free(dd_in[c]);free(dd_out[c]);dd_in[c]=dd_out[c]=(u8 *)0;}
     dd_w=dd_h=0;dd_prev_valid=dd_have_copy=0;dd_keep=1;dd_window=dd_window_repeats=0;dd_last_call_us=0;
 }
 static int dd_prepare(u32 w,u32 h) {
-    if(w==dd_w && h==dd_h && dd_hash[0])return 0;
+    if(w==dd_w && h==dd_h && dd_in[0])return 0;
     dd_reset();
-    for(u32 i=0;i<2;i++)if(!(dd_hash[i]=malloc((u64)3*h*8))){dd_reset();return -12;}
-    for(u32 c=0;c<3;c++)if(!(dd_out[c]=malloc((u64)w*h))){dd_reset();return -12;}
+    for(u32 c=0;c<3;c++)if(!(dd_in[c]=malloc((u64)w*h)) || !(dd_out[c]=malloc((u64)w*h))){dd_reset();return -12;}
     dd_w=w;dd_h=h;return 0;
 }
 
@@ -283,20 +298,19 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(gap>=0)dd_hist[gap<14000?0:gap<20000?1:gap<30000?2:gap<36000?3:gap<50000?4:5]++;
     }
     int served=0;
-    if(!dd_prepare(a->width,a->height)) {
-        u64 *cur=dd_hash[dd_cur],*prev=dd_hash[dd_cur^1];
-        dd_run(planes,a->strides,a->width,a->height,0,cur);
-        int same=dd_prev_valid;
-        for(u32 i=0;same && i<3*a->height;i++)if(cur[i]!=prev[i])same=0;
+    int dd_ok=!dd_prepare(a->width,a->height);
+    if(dd_ok) {
+        int same=dd_prev_valid && !dd_run(planes,a->strides,a->width,a->height,0);
         if(same){dd_repeats++;dd_window_repeats++;}
-        if(same && dd_have_copy){dd_run(planes,a->strides,a->width,a->height,1,cur);served=1;dd_served++;rc=0;}
-        dd_cur^=1;dd_prev_valid=1;
+        if(same && dd_have_copy){dd_run(planes,a->strides,a->width,a->height,1);served=1;dd_served++;rc=0;}
         if(++dd_window>=120){dd_keep=dd_window_repeats*10>=dd_window;dd_window=dd_window_repeats=0;if(!dd_keep)dd_have_copy=0;}
     }
     if(!served) {
+        /* Keep this input as the reference before converting it in place. */
+        if(dd_ok){dd_run(planes,a->strides,a->width,a->height,3);dd_prev_valid=1;}
         rc=rgb_parallel(dense,compact,kernel,planes,a->strides,a->width,a->height);
-        if(!rc && dd_keep && dd_hash[0]){dd_run(planes,a->strides,a->width,a->height,2,(u64 *)0);dd_have_copy=1;}
-        else if(rc)dd_have_copy=0;
+        if(!rc && dd_ok && dd_keep){dd_run(planes,a->strides,a->width,a->height,2);dd_have_copy=1;}
+        else{dd_have_copy=0;if(rc)dd_prev_valid=0;}
     }
     clock_gettime(1,&converted);
     if(!rc && choice<0) {

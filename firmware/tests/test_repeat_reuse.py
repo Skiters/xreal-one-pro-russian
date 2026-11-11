@@ -68,7 +68,11 @@ fresh_b = run(b)
 assert fresh_b != fresh_a
 assert run(b) == fresh_b
 assert run(a) == fresh_a                      # back to A: recomputed, same output
+# Dither-like noise (+-1 on every pixel) is a repeat: served from the copy.
+dithered = [bytes(max(0, min(255, v + rng.choice((-1, 0, 1)))) for v in plane) for plane in a]
+run(a)
+assert run(dithered) == fresh_a, '+-1 noise must count as a repeat'
 changed = run(b_one_row)
 assert changed != fresh_a, 'a single changed pixel must not be served from the copy'
 assert run(b_one_row) == changed
-print('repeat reuse: repeated frames identical to fresh conversion; single-pixel change detected')
+print('repeat reuse: repeats identical to fresh conversion; +-1 dither served; single-pixel change detected')

@@ -138,6 +138,16 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf12
+
+perf11 on the device: 0 exact repeats while playing a film, AI HDR paced at
+an even ~29.8/s, convert 22–24 ms including the row hashes. macOS temporally
+dithers 8-bit external outputs, so repeated frames differ by +-1. perf12
+compares each frame with the previous input with a tolerance of 2 levels per
+pixel (NEON abs-diff, stops at the first larger difference) instead of exact
+hashes; a repeat gets the kept output (within ~2-3 levels of a fresh
+conversion). The test now also checks that +-1 noise is served from the copy.
+
 ## perf11
 
 - **Repeated-frame reuse (AI HDR):** a 24 fps film in a 60 Hz signal repeats
