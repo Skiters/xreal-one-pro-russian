@@ -50,7 +50,8 @@ def run(rows):
     for c in range(3):
         C.memmove(lib.test_memory(PLANES[c]), rows[c], S*H)
     assert call('ArArmlut3dProcessRgbToYuv', frame, 52) == 0
-    return [C.string_at(lib.test_memory(PLANES[c]), S*H) for c in range(3)]
+    # Visible pixels only: the adapter never writes the stride padding.
+    return [b''.join(C.string_at(lib.test_memory(PLANES[c]) + y*S, W) for y in range(H)) for c in range(3)]
 
 
 def make():
