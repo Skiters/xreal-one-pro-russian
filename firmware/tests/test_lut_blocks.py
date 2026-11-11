@@ -91,7 +91,7 @@ def main():
                 for y in range(h):
                     assert bytes(bb[c][y*s+w:(y+1)*s]) == bytes([171])*(s-w)
             if name.endswith('.cube'):
-                assert err_ref <= 2, (name, kind, err_ref)
+                assert err_ref <= 3, (name, kind, err_ref)  # see the ARM64 test
             if args.dump:
                 with open(args.dump, 'ab') as f:
                     f.write(b''.join(bytes(x) for x in bb))

@@ -548,7 +548,7 @@ int xreal_compact16_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
  * within a level or two of the exact result; any other tile takes the exact
  * compact16 path. Video (especially compressed film) is mostly smooth, so
  * most tiles need 2 instead of 8 table lookups. */
-#define BLOCK_FLAT 4   /* film-like content: ~95-100% smooth tiles, <= 2 levels */
+#define BLOCK_FLAT 4   /* film-like content: ~95-100% smooth tiles; <= 3 levels on the vendor cube */
 /* Hidden counters (PC-relative access, no GOT): read via the accessor. */
 static unsigned long long xreal_blocks_smooth_tiles, xreal_blocks_tiles;
 

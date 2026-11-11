@@ -155,7 +155,9 @@ def test(path, bin_path):
             # blocks assume a smooth cube (local slope ~1); the random cube is
             # only a stress input, so the bound applies to the vendor cubes.
             if name.endswith('.cube'):
-                assert blk_error <= 2, (name, kind, 'blocks', blk_error)
+                # <= 3: steep regions of the vendor AI HDR cube (slope ~1.6)
+                # with offsets up to the 4-level smoothness threshold.
+                assert blk_error <= 3, (name, kind, 'blocks', blk_error)
             report.setdefault(name, {})[kind] = {
                 'max_error_vs_float': error, 'max_diff_vs_dense': diff,
                 'dense_instructions_per_pixel': round(counts[0]/(width*height), 2),
