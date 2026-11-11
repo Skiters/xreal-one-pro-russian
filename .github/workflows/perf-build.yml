@@ -27,20 +27,29 @@ jobs:
 
       - name: Toolchain
         run: |
-          # Use the main Ubuntu archive (and a second public mirror) instead of
-          # the runner's default azure.archive.ubuntu.com, which failed to
-          # resolve; apt's mirror+file method tries them in order.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            printf 'http://archive.ubuntu.com/ubuntu/\thttp://mirrors.edge.kernel.org/ubuntu/\n' | tr '\t' '\n' | sudo tee /etc/apt/apt-mirrors.txt
-          fi
-          sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' \
-            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-          # Retry: runner DNS to the Ubuntu mirror fails intermittently.
-          for i in 1 2 3 4 5; do
-            sudo apt-get update -qq && sudo apt-get install -y -qq clang lld && break
-            echo "apt attempt $i failed, retrying"; sleep 30
+          # The runner image ships LLVM; use it and skip apt (no network needed).
+          mkdir -p "$HOME/llvm-bin"
+          for v in "" -18 -17 -19; do
+            if command -v "clang$v" >/dev/null && command -v "ld.lld$v" >/dev/null; then
+              ln -sf "$(command -v clang$v)" "$HOME/llvm-bin/clang"
+              ln -sf "$(command -v ld.lld$v)" "$HOME/llvm-bin/ld.lld"
+              echo "Using preinstalled clang$v / ld.lld$v"; break
+            fi
           done
-          command -v clang && command -v ld.lld
+          if [ ! -e "$HOME/llvm-bin/ld.lld" ]; then
+            # Fallback: apt from the main archive (azure mirror DNS failed once).
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              printf 'http://archive.ubuntu.com/ubuntu/\nhttp://mirrors.edge.kernel.org/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt
+            fi
+            for i in 1 2 3; do
+              timeout 300 sh -c 'sudo apt-get update -qq && sudo apt-get install -y -qq clang lld' && break
+              echo "apt attempt $i failed, retrying"; sleep 20
+            done
+            ln -sf "$(command -v clang)" "$HOME/llvm-bin/clang"
+            ln -sf "$(command -v ld.lld)" "$HOME/llvm-bin/ld.lld"
+          fi
+          echo "$HOME/llvm-bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/llvm-bin:$PATH"
           clang --version | head -1
           ld.lld --version
           python -m pip install -q -r firmware/test-requirements.txt capstone==5.0.3
