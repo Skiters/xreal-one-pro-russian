@@ -138,6 +138,19 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf9
+
+- **blocks v2 (NEON):** two 4x2 tiles per step; smoothness via vector
+  min/max, the four block means go through one compact16 group, offsets are
+  added with saturating vector adds. Byte-identical to v1 (checked against
+  the portable build). perf7's scalar v1 lost on the device (39 ms vs 20.9);
+  on an M2 v2 is 36% faster than compact16 on smooth content, 11% slower on
+  grain. Autotune still decides.
+- **AI HDR adaptive pacing:** EMA of the per-frame busy time; above 15.8 ms
+  the adapter paces to every second 60 Hz frame (even 30/s), below 13.8 ms it
+  returns to every frame. Logged as `perf9 pacing ...`.
+- Colour grade 80% (brightness change 35%).
+
 ## perf7 / perf8
 
 - **AI HDR `blocks` kernel:** compact16 plus smooth 2x2 reuse

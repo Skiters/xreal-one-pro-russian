@@ -621,19 +621,11 @@ static inline int block_smooth(u32 a, u32 b, u32 c, u32 d) {
 
 static inline u8 clamp_u8(int v) { return (u8)(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-int xreal_blocks_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
-                         u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
-    if (!table || !r || !g || !b || !width || !height ||
-        width>1920 || height>1080 || rs<width || gs<width || bs<width ||
-        rs>4096 || gs>4096 || bs>4096) return -22;
-    const u32 *gmap = table + COMPACT_WORDS, *bmap = gmap + 256;
+/* v1 semantics for tiles [x, width) of one row pair; returns smooth/total. */
+static void blocks_v1_cols(const u32 *table, const u32 *gmap, const u32 *bmap,
+                           u8 *rp[2], u8 *gp[2], u8 *bp[2], u32 x, u32 width,
+                           unsigned long long *smooth_out, unsigned long long *tiles_out) {
     unsigned long long smooth = 0, tiles = 0;
-    u32 y = 0;
-    for (; y + 2 <= height; y += 2) {
-        u8 *rp[2] = {r+(u64)y*rs, r+(u64)(y+1)*rs};
-        u8 *gp[2] = {g+(u64)y*gs, g+(u64)(y+1)*gs};
-        u8 *bp[2] = {b+(u64)y*bs, b+(u64)(y+1)*bs};
-        u32 x = 0;
         for (; x + 4 <= width; x += 4) {
             ++tiles;
             u8 *pl[3][2] = {{rp[0]+x, rp[1]+x}, {gp[0]+x, gp[1]+x}, {bp[0]+x, bp[1]+x}};
@@ -668,6 +660,75 @@ int xreal_blocks_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
                 c16_pixel(table, gmap, bmap, rp[row][x], gp[row][x], bp[row][x], out);
                 rp[row][x] = (u8)out[0]; gp[row][x] = (u8)out[1]; bp[row][x] = (u8)out[2];
             }
+    *smooth_out += smooth; *tiles_out += tiles;
+}
+
+int xreal_blocks_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
+                         u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    if (!table || !r || !g || !b || !width || !height ||
+        width>1920 || height>1080 || rs<width || gs<width || bs<width ||
+        rs>4096 || gs>4096 || bs>4096) return -22;
+    const u32 *gmap = table + COMPACT_WORDS, *bmap = gmap + 256;
+    unsigned long long smooth = 0, tiles = 0;
+    u32 y = 0;
+    for (; y + 2 <= height; y += 2) {
+        u8 *rp[2] = {r+(u64)y*rs, r+(u64)(y+1)*rs};
+        u8 *gp[2] = {g+(u64)y*gs, g+(u64)(y+1)*gs};
+        u8 *bp[2] = {b+(u64)y*bs, b+(u64)(y+1)*bs};
+        u32 x = 0;
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+        /* v2: two 4x2 tiles (8x2 pixels) per step, identical results to v1. */
+        for (; x + 8 <= width; x += 8) {
+            uint8x8_t px[3][2];
+            u8 *base[3][2] = {{rp[0]+x, rp[1]+x}, {gp[0]+x, gp[1]+x}, {bp[0]+x, bp[1]+x}};
+            uint8x8_t range_ok = vdup_n_u8(0xff);
+            uint16x4_t sums[3];
+            for (u32 c = 0; c < 3; ++c) {
+                px[c][0] = vld1_u8(base[c][0]); px[c][1] = vld1_u8(base[c][1]);
+                uint8x8_t mn = vmin_u8(px[c][0], px[c][1]), mx = vmax_u8(px[c][0], px[c][1]);
+                uint8x8_t bmin = vpmin_u8(mn, mn), bmax = vpmax_u8(mx, mx);   /* lanes 0..3: blocks */
+                range_ok = vand_u8(range_ok, vcle_u8(vsub_u8(bmax, bmin), vdup_n_u8(BLOCK_FLAT)));
+                sums[c] = vadd_u16(vpaddl_u8(px[c][0]), vpaddl_u8(px[c][1]));
+            }
+            u32 ok; vst1_lane_u32(&ok, vreinterpret_u32_u8(range_ok), 0);
+            int tile_a = (ok & 0xffffu) == 0xffffu, tile_b = (ok >> 16) == 0xffffu;
+            tiles += 2;
+            if (!tile_a && !tile_b) {
+                for (u32 row = 0; row < 2; ++row) {
+                    c16_group4(table, gmap, bmap, rp[row]+x, gp[row]+x, bp[row]+x);
+                    c16_group4(table, gmap, bmap, rp[row]+x+4, gp[row]+x+4, bp[row]+x+4);
+                }
+                continue;
+            }
+            smooth += (u32)tile_a + (u32)tile_b;
+            /* Exact path for a non-smooth tile first: it only touches its own pixels. */
+            if (!tile_a)
+                for (u32 row = 0; row < 2; ++row) c16_group4(table, gmap, bmap, rp[row]+x, gp[row]+x, bp[row]+x);
+            if (!tile_b)
+                for (u32 row = 0; row < 2; ++row) c16_group4(table, gmap, bmap, rp[row]+x+4, gp[row]+x+4, bp[row]+x+4);
+            /* Four block means -> one compact16 group. */
+            u8 mean[3][4], lut[3][4];
+            for (u32 c = 0; c < 3; ++c) {
+                uint8x8_t m = vmovn_u16(vcombine_u16(vshr_n_u16(vadd_u16(sums[c], vdup_n_u16(2)), 2), vdup_n_u16(0)));
+                vst1_lane_u32((uint32_t *)(void *)mean[c], vreinterpret_u32_u8(m), 0);
+                __builtin_memcpy(lut[c], mean[c], 4);
+            }
+            c16_group4(table, gmap, bmap, lut[0], lut[1], lut[2]);
+            for (u32 c = 0; c < 3; ++c) {
+                u32 lw, mw; __builtin_memcpy(&lw, lut[c], 4); __builtin_memcpy(&mw, mean[c], 4);
+                int16x4_t d = vsub_s16(vreinterpret_s16_u16(vget_low_u16(vmovl_u8(vcreate_u8(lw)))),
+                                       vreinterpret_s16_u16(vget_low_u16(vmovl_u8(vcreate_u8(mw)))));
+                int16x4x2_t z = vzip_s16(d, d);                       /* d0 d0 d1 d1 | d2 d2 d3 d3 */
+                int16x8_t dd = vcombine_s16(z.val[0], z.val[1]);
+                for (u32 row = 0; row < 2; ++row) {
+                    uint8x8_t o = vqmovun_s16(vaddq_s16(vreinterpretq_s16_u16(vmovl_u8(px[c][row])), dd));
+                    if (tile_a) vst1_lane_u32((uint32_t *)(void *)base[c][row], vreinterpret_u32_u8(o), 0);
+                    if (tile_b) vst1_lane_u32((uint32_t *)(void *)(base[c][row]+4), vreinterpret_u32_u8(o), 1);
+                }
+            }
+        }
+#endif
+        blocks_v1_cols(table, gmap, bmap, rp, gp, bp, x, width, &smooth, &tiles);
     }
     for (; y < height; ++y) {
         u8 *rr = r+(u64)y*rs, *gg = g+(u64)y*gs, *bb = b+(u64)y*bs;

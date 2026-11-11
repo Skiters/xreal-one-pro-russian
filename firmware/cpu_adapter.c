@@ -16,6 +16,18 @@ extern int ar_hal_sys_mmz_flush_cache(u64,void *,u32);
 extern int ar_hal_sys_mmz_flush_cache_pa(u64,u32);
 struct timespec {long sec,nsec;};
 extern int clock_gettime(int,struct timespec *);
+extern int nanosleep(const struct timespec *,struct timespec *);
+/* perf9 adaptive pacing. While a frame (map + convert + flush) fits a 60 Hz
+ * source, AI HDR runs every frame. When it does not, Pilot skips source
+ * frames at irregular points (judder); then each call returns no earlier
+ * than PACE_US after the previous one began, locking onto every second
+ * source frame: an even 30 frames/s. EMA of the busy time with hysteresis. */
+#define PACE_US 32800L
+#define PACE_ON_US 15800L
+#define PACE_OFF_US 13800L
+static long pace_ema_us, pace_last_start_us;
+static int pacing;
+static long now_us(void){struct timespec t;clock_gettime(1,&t);return t.sec*1000000L+t.nsec/1000;}
 extern int open(const char *,int,...);
 extern long write(int,const void *,u64);
 extern int close(int);
@@ -167,7 +179,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;
-        choice=-1;tuned[2]=tuned[3]=0;
+        choice=-1;tuned[2]=tuned[3]=0;pacing=0;pace_ema_us=0;pace_last_start_us=0;
         int rc=0;
         u32 *small=malloc(xreal_compact_table_bytes());
         int crc=small ? 0 : -12;
@@ -213,6 +225,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(a->result<a->planes[i]+sizes[i] && a->planes[i]<a->result+64)return -22;
         for(u32 j=0;j<i;j++) if(a->planes[i]<a->planes[j]+sizes[j] && a->planes[j]<a->planes[i]+sizes[i])return -22;
     }
+    long call_start_us=now_us();
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
     struct timespec before,converted,flushed;
     int kernel=choice>=0 ? choice : 2+(int)(frame_count%2);
@@ -263,6 +276,8 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         trace("frame timestamp microseconds",0,frame_count,
               flushed.sec*1000000+flushed.nsec/1000);
         if(frame_count%300==0 && frame_count) {
+            trace("perf9 busy ema us",0,frame_count,pace_ema_us);
+            trace("perf9 pacing",0,frame_count,pacing);
             unsigned long long t=__atomic_exchange_n(&xreal_blocks_tiles,0,__ATOMIC_RELAXED);
             unsigned long long sm=__atomic_exchange_n(&xreal_blocks_smooth_tiles,0,__ATOMIC_RELAXED);
             trace("blocks smooth tiles per mille",0,frame_count,t ? (long)(sm*1000/t) : -1);
@@ -271,6 +286,19 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     }
 done:
     for(u32 i=0;i<3;i++)if(planes[i])ar_hal_sys_munmap(planes[i],sizes[i]);
+    if(!rc && choice>=0) {
+        long busy=now_us()-call_start_us;
+        pace_ema_us=pace_ema_us ? pace_ema_us+(busy-pace_ema_us)/16 : busy;
+        int was=pacing;
+        if(!pacing && pace_ema_us>PACE_ON_US)pacing=1;
+        else if(pacing && pace_ema_us<PACE_OFF_US)pacing=0;
+        if(pacing!=was)trace(pacing ? "perf9 pacing on (even 30/s), busy ema us" : "perf9 pacing off (60/s), busy ema us",0,frame_count,pace_ema_us);
+        if(pacing && pace_last_start_us) {
+            long wait=PACE_US-(now_us()-pace_last_start_us);
+            if(wait>0){struct timespec t={wait/1000000L,(wait%1000000L)*1000L};nanosleep(&t,(struct timespec *)0);}
+        }
+    }
+    pace_last_start_us=call_start_us;
     if(!rc)frame_count++;
     if(rc || frame_count==1)record("frame processed",rc);
     return result(a->result,rc);
