@@ -32,7 +32,11 @@ extern int nanosleep(const struct timespec *, struct timespec *);
  * began, slightly under two 60 Hz source frames, so the pipeline locks onto
  * every second source frame: 30 frames/s, each shown exactly 3 refreshes.
  * The warp itself is unchanged (it finishes in ~15 ms). */
-#define PACE_US 32800ULL
+/* perf11: pacing DISABLED. On the device the even 30/s cadence raised
+ * Pilot's synth latency from ~70 ms to 100-177 ms (frames queue while the
+ * call sleeps) and head-locked 3D visibly lagged and jumped. 2D->3D frames
+ * must return as soon as the warp is done. */
+#define PACE_US 0ULL
 static u64 pace_last_start, pace_slept_us, pace_late;
 
 extern void *ar_hal_sys_mmap_cache(u64, u32);

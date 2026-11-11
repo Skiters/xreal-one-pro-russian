@@ -148,6 +148,9 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   served, so film keeps its 3:2 cadence instead of 2-1-1-1 at an even 30.
 - Diagnostics every 300 frames: repeats, served from copy, and a histogram of
   call-to-call gaps (<14, 14-20, 20-30, 30-36, 36-50, >50 ms).
+- **Real3D pacing removed:** on the device even 30/s raised Pilot's synth
+  latency from ~70 ms to 100–177 ms (frames queue while the call sleeps),
+  and head-locked 3D lagged and jumped. 3D returns as soon as the warp ends.
 - `test_repeat_reuse.py`: repeated frames byte-identical to a fresh
   conversion; a single changed pixel is never served from the copy.
 
