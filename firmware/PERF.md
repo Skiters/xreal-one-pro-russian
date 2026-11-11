@@ -158,7 +158,7 @@ uses compact16 without tuning.
 - **AI HDR adaptive pacing:** EMA of the per-frame busy time; above 15.8 ms
   the adapter paces to every second 60 Hz frame (even 30/s), below 13.8 ms it
   returns to every frame. Logged as `perf9 pacing ...`.
-- Colour grade 80% (brightness change 35%).
+- Colour grade 70% (brightness change 35%); 80% looked over-saturated.
 
 ## perf7 / perf8
 
