@@ -138,6 +138,19 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf11
+
+- **Repeated-frame reuse (AI HDR):** a 24 fps film in a 60 Hz signal repeats
+  frames 3:2 (60% exact repeats). Every frame's rows are hashed (64-bit per
+  row and plane, every pixel, parallel); if all equal the previous frame's,
+  the kept output copy is written instead of re-converting. Copies are kept
+  only while >= 10% of the last 120 frames repeat. Goal: every source frame
+  served, so film keeps its 3:2 cadence instead of 2-1-1-1 at an even 30.
+- Diagnostics every 300 frames: repeats, served from copy, and a histogram of
+  call-to-call gaps (<14, 14-20, 20-30, 30-36, 36-50, >50 ms).
+- `test_repeat_reuse.py`: repeated frames byte-identical to a fresh
+  conversion; a single changed pixel is never served from the copy.
+
 ## perf10
 
 perf9 on the device: compact16 ran 60.0 frames/s at ~11 ms on lighter

@@ -54,6 +54,7 @@ jobs:
             firmware/runtime.c work/3d-lab/real3d_cpu.c firmware/tests/hal_stub.c -o /tmp/xreal-rpc.so
           python firmware/tests/test_rpc_failures.py /tmp/xreal-rpc.so
           python firmware/tests/test_real3d_smooth.py /tmp/xreal-rpc.so
+          python firmware/tests/test_repeat_reuse.py /tmp/xreal-rpc.so
 
       - name: Build perf BIN
         run: |

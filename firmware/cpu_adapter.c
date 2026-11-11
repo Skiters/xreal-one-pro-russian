@@ -157,6 +157,51 @@ static int rgb_parallel(const u64 *table,const u32 *small,int kernel,u8 *planes[
     return 0;
 }
 
+/* perf11 repeated-frame reuse. A 24 fps film in a 60 Hz signal repeats each
+ * frame 3 or 2 times (60% exact repeats). Every frame's rows are hashed
+ * (64-bit per row and plane, all pixels); when all hashes equal the previous
+ * frame's, the previous AI HDR output is copied instead of re-converting, so
+ * every source frame keeps up and film keeps its native 3:2 cadence.
+ * Copies are kept only while repeats occur (>= 10% of the last 120 frames). */
+struct dd_job {u8 *planes[3]; u8 *out[3]; u32 strides[3], w, h, y0, y1; u64 *hash; int mode;};
+static u64 *dd_hash[2]; static u8 *dd_out[3]; static u32 dd_w, dd_h; static int dd_cur, dd_prev_valid, dd_have_copy, dd_keep=1;
+static u32 dd_window, dd_window_repeats, dd_repeats, dd_served, dd_hist[6];
+static long dd_last_call_us;
+static void *dd_worker(void *arg) {
+    struct dd_job *j=arg;
+    for(u32 c=0;c<3;c++)for(u32 y=j->y0;y<j->y1;y++) {
+        u8 *row=j->planes[c]+(u64)y*j->strides[c], *keep=j->out[c] ? j->out[c]+(u64)y*j->w : (u8 *)0;
+        if(j->mode==0) {
+            u64 h=0x9e3779b97f4a7c15ULL^((u64)c<<32|y);u32 x=0;
+            for(;x+8<=j->w;x+=8){u64 v;__builtin_memcpy(&v,row+x,8);h=(h^v)*0xff51afd7ed558ccdULL;h^=h>>29;}
+            for(;x<j->w;x++)h=(h^row[x])*0x100000001b3ULL;
+            j->hash[c*j->h+y]=h;
+        } else if(j->mode==1) __builtin_memcpy(row,keep,j->w);   /* previous output -> frame */
+        else __builtin_memcpy(keep,row,j->w);                         /* frame -> kept output */
+    }
+    return (void *)0;
+}
+static void dd_run(u8 *planes[3],const u32 strides[3],u32 w,u32 h,int mode,u64 *hash) {
+    struct dd_job jobs[4];
+    for(u32 i=0;i<4;i++) {
+        jobs[i]=(struct dd_job){{planes[0],planes[1],planes[2]},{dd_out[0],dd_out[1],dd_out[2]},
+                                {strides[0],strides[1],strides[2]},w,h,h*i/4,h*(i+1)/4,hash,mode};
+    }
+    xreal_parallel_run(dd_worker,jobs,sizeof(jobs[0]),4);
+}
+static void dd_reset(void) {
+    for(u32 i=0;i<2;i++){free(dd_hash[i]);dd_hash[i]=(u64 *)0;}
+    for(u32 c=0;c<3;c++){free(dd_out[c]);dd_out[c]=(u8 *)0;}
+    dd_w=dd_h=0;dd_prev_valid=dd_have_copy=0;dd_keep=1;dd_window=dd_window_repeats=0;dd_last_call_us=0;
+}
+static int dd_prepare(u32 w,u32 h) {
+    if(w==dd_w && h==dd_h && dd_hash[0])return 0;
+    dd_reset();
+    for(u32 i=0;i<2;i++)if(!(dd_hash[i]=malloc((u64)3*h*8))){dd_reset();return -12;}
+    for(u32 c=0;c<3;c++)if(!(dd_out[c]=malloc((u64)w*h))){dd_reset();return -12;}
+    dd_w=w;dd_h=h;return 0;
+}
+
 static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     if(core || !call || sync!=1 || call->name[31] || !call->args)return -22;
     if(!strcmp(call->name,"ArArmlut3dInit")) {
@@ -179,7 +224,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;
-        choice=-1;tuned[2]=tuned[3]=0;pacing=0;pace_ema_us=0;pace_last_start_us=0;
+        choice=-1;tuned[2]=tuned[3]=0;pacing=0;pace_ema_us=0;pace_last_start_us=0;dd_reset();
         int rc=0;
         u32 *small=malloc(xreal_compact_table_bytes());
         int crc=small ? 0 : -12;
@@ -209,7 +254,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         u64 p=*(const u64 *)call->args;
         if(!valid(p,64))return -22;
         record("LUT closing",0);free(dense);dense=(void *)0;
-        free(compact);compact=(void *)0;
+        free(compact);compact=(void *)0;dd_reset();
         choice=-1;return result(p,0);
     }
     if(strcmp(call->name,"ArArmlut3dProcessRgbToYuv"))return xreal_real3d_rpc(core,call,sync);
@@ -233,7 +278,26 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     if(choice<0)choice=2;
     int kernel=choice;
     clock_gettime(1,&before);
-    rc=rgb_parallel(dense,compact,kernel,planes,a->strides,a->width,a->height);
+    {   long gap=dd_last_call_us ? call_start_us-dd_last_call_us : -1;
+        dd_last_call_us=call_start_us;
+        if(gap>=0)dd_hist[gap<14000?0:gap<20000?1:gap<30000?2:gap<36000?3:gap<50000?4:5]++;
+    }
+    int served=0;
+    if(!dd_prepare(a->width,a->height)) {
+        u64 *cur=dd_hash[dd_cur],*prev=dd_hash[dd_cur^1];
+        dd_run(planes,a->strides,a->width,a->height,0,cur);
+        int same=dd_prev_valid;
+        for(u32 i=0;same && i<3*a->height;i++)if(cur[i]!=prev[i])same=0;
+        if(same){dd_repeats++;dd_window_repeats++;}
+        if(same && dd_have_copy){dd_run(planes,a->strides,a->width,a->height,1,cur);served=1;dd_served++;rc=0;}
+        dd_cur^=1;dd_prev_valid=1;
+        if(++dd_window>=120){dd_keep=dd_window_repeats*10>=dd_window;dd_window=dd_window_repeats=0;if(!dd_keep)dd_have_copy=0;}
+    }
+    if(!served) {
+        rc=rgb_parallel(dense,compact,kernel,planes,a->strides,a->width,a->height);
+        if(!rc && dd_keep && dd_hash[0]){dd_run(planes,a->strides,a->width,a->height,2,(u64 *)0);dd_have_copy=1;}
+        else if(rc)dd_have_copy=0;
+    }
     clock_gettime(1,&converted);
     if(!rc && choice<0) {
         long us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
@@ -279,6 +343,14 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         trace("frame timestamp microseconds",0,frame_count,
               flushed.sec*1000000+flushed.nsec/1000);
         if(frame_count%300==0 && frame_count) {
+            trace("perf11 repeats per 300",0,frame_count,(long)dd_repeats);
+            trace("perf11 served from copy per 300",0,frame_count,(long)dd_served);
+            trace("perf11 copies kept",0,frame_count,(long)dd_keep);
+            char line[200];
+            int n=snprintf(line,sizeof(line),"CPU perf11 call gaps <14:%u 14-20:%u 20-30:%u 30-36:%u 36-50:%u >50:%u frames=%u\n",
+                           dd_hist[0],dd_hist[1],dd_hist[2],dd_hist[3],dd_hist[4],dd_hist[5],frame_count);
+            if(n>0 && n<(int)sizeof(line)){int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);if(fd>=0){write(fd,line,(u64)n);close(fd);}}
+            dd_repeats=dd_served=0;for(u32 k=0;k<6;k++)dd_hist[k]=0;
             trace("perf9 busy ema us",0,frame_count,pace_ema_us);
             trace("perf9 pacing",0,frame_count,pacing);
             unsigned long long t=0,sm=0;
