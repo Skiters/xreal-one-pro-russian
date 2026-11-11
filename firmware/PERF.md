@@ -138,7 +138,15 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
-## Variant `-CINEMA30-UI` (opt-in, One Pro, movie-first)
+## Variant `-CINEMA30-UI` (does NOT work on One Pro)
+
+Tested on X1112011: selecting AI HDR made Pilot request EDID 11
+(`1920_1080_30`) and the BSP refused it (`NRDpSetCurrentEdidAndAudioBsp
+failed, edid=11`, `SetDisplayDynamicRangeType ret=5001`), so the mode did not
+switch. The config entry exists but the One Pro DP receiver lacks the timing.
+CI now builds the re-graded cube on top of `-HDR60-UI` instead.
+
+### Original rationale
 
 At a 60 Hz source the CPU path processes ~48–50 frames/s, so Pilot skips
 ~10 source frames per second at irregular points and motion looks uneven.

@@ -399,7 +399,8 @@ if __name__ == '__main__':
     p.add_argument('--hdr-tone', type=int, default=None,
                    help='With --hdr-strength: share of the AI HDR brightness change kept, percent')
     p.add_argument('--cinema', action='store_true',
-                   help='With --experimental: 30 Hz source (90 Hz OLED, 3x) for AI HDR/Reading/Movie/2D->3D')
+                   help='With --experimental: 30 Hz source for AI HDR/2D->3D. DOES NOT WORK on One Pro: '
+                        'the DP receiver rejects EDID 1920_1080_30 (NRDpSetCurrentEdidAndAudioBsp fails)')
     p.add_argument('--experimental', action='store_true',
                    help='Also apply experimental(): 60 Hz source for AI HDR/Reading + upstream ui_fast')
     build(p.parse_args())
