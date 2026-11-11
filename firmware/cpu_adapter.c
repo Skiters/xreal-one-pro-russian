@@ -30,16 +30,19 @@ extern u64 xreal_compact_table_bytes(void);
 extern int xreal_build_compact_table_range(const u16 *,u32 *,u32,u32);
 extern int xreal_compact_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern int xreal_compact16_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
+extern int xreal_blocks_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
+extern unsigned long long xreal_blocks_smooth_tiles, xreal_blocks_tiles;
 /* Kernels: 0 dense (rc7 table, only when the compact table cannot be built),
  * 1 compact, 2 compact16 (same table, 16-bit NEON arithmetic, within one
- * level of the cube). perf4 on video: compact 23.4 ms beat compact+prefetch
+ * level of the cube), 3 blocks (compact16 plus smooth 2x2 block reuse, within
+ * two levels; aims at < 16.7 ms so a 60 Hz source is never skipped). perf4 on video: compact 23.4 ms beat compact+prefetch
  * 33.7 and tetrahedral 33.4; those stay in lut_fast.c but are not used.
  * After LUT init, kernels 1 and 2 alternate for TUNE frames each and the
  * lower median wins (short, so the first second stays smooth). */
 #define TUNE 10
 static u32 *compact;
 static int choice=-1;
-static u32 tune[3][TUNE], tuned[3];
+static u32 tune[4][TUNE], tuned[4];
 static u32 median(u32 *v,u32 n) {
     for(u32 i=1;i<n;i++)for(u32 j=i;j && v[j-1]>v[j];j--){u32 x=v[j];v[j]=v[j-1];v[j-1]=x;}
     return v[n/2];
@@ -112,6 +115,8 @@ struct rgb_job {struct rgb_frame *f;int rc;};
 static int rgb_rows(const struct rgb_frame *f,u32 begin,u32 rows) {
     u8 *p[3];
     for(u32 c=0;c<3;c++)p[c]=f->planes[c]+(u64)begin*f->strides[c];
+    if(f->kernel==3)
+        return xreal_blocks_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     if(f->kernel==2)
         return xreal_compact16_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     if(f->kernel==1)
@@ -162,7 +167,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;
-        choice=-1;tuned[1]=tuned[2]=0;
+        choice=-1;tuned[2]=tuned[3]=0;
         int rc=0;
         u32 *small=malloc(xreal_compact_table_bytes());
         int crc=small ? 0 : -12;
@@ -210,19 +215,19 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     }
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
     struct timespec before,converted,flushed;
-    int kernel=choice>=0 ? choice : 1+(int)(frame_count%2);
+    int kernel=choice>=0 ? choice : 2+(int)(frame_count%2);
     clock_gettime(1,&before);
     rc=rgb_parallel(dense,compact,kernel,planes,a->strides,a->width,a->height);
     clock_gettime(1,&converted);
     if(!rc && choice<0) {
         long us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
         if(tuned[kernel]<TUNE)tune[kernel][tuned[kernel]++]=(u32)(us>0 ? us : 0);
-        if(tuned[1]>=TUNE && tuned[2]>=TUNE) {
-            u32 m1=median(tune[1],TUNE),m2=median(tune[2],TUNE);
-            choice=m2<m1 ? 2 : 1;
+        if(tuned[2]>=TUNE && tuned[3]>=TUNE) {
+            u32 m2=median(tune[2],TUNE),m3=median(tune[3],TUNE);
+            choice=m3<=m2 ? 3 : 2;
             char line[200];
-            int n=snprintf(line,sizeof(line),"CPU perf6: autotune compact_median_us=%u compact16_median_us=%u choice=%s\n",
-                           m1,m2,choice==2 ? "compact16" : "compact");
+            int n=snprintf(line,sizeof(line),"CPU perf7: autotune compact16_median_us=%u blocks_median_us=%u choice=%s\n",
+                           m2,m3,choice==3 ? "blocks" : "compact16");
             if(n>0 && n<(int)sizeof(line)) {
                 int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
                 if(fd>=0){write(fd,line,(u64)n);close(fd);}
@@ -258,6 +263,9 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         trace("frame timestamp microseconds",0,frame_count,
               flushed.sec*1000000+flushed.nsec/1000);
         if(frame_count%300==0 && frame_count) {
+            unsigned long long t=__atomic_exchange_n(&xreal_blocks_tiles,0,__ATOMIC_RELAXED);
+            unsigned long long sm=__atomic_exchange_n(&xreal_blocks_smooth_tiles,0,__ATOMIC_RELAXED);
+            trace("blocks smooth tiles per mille",0,frame_count,t ? (long)(sm*1000/t) : -1);
             trace("cpu0 kHz",0,frame_count,sysfs_number("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"));
         }
     }

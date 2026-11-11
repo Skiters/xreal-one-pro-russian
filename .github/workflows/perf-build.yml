@@ -47,6 +47,7 @@ jobs:
           python firmware/tests/test_lut.py /tmp/xreal-lut.so --bin inputs/rc7.bin
           python firmware/tests/test_lut_compact.py /tmp/xreal-lut.so --bin inputs/rc7.bin
           python firmware/tests/test_lut_tetra.py /tmp/xreal-lut.so --bin inputs/rc7.bin
+          python firmware/tests/test_lut_blocks.py /tmp/xreal-lut.so --bin inputs/rc7.bin
           gcc -O2 -pthread firmware/runtime.c firmware/tests/runtime_test.c -o /tmp/xreal-runtime
           /tmp/xreal-runtime
           gcc -O2 -shared -fPIC -pthread -Ifirmware firmware/cpu_adapter.c firmware/lut_fast.c \
@@ -66,7 +67,7 @@ jobs:
           # Movie-first colour variant: HDR60-UI plus the re-graded AI HDR cube.
           # (A 30 Hz source was tried: the One Pro DP receiver rejects EDID 1920_1080_30.)
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
-            --output outputs/cinema --tag "$TAG" --experimental --hdr-strength 60 --hdr-tone 35
+            --output outputs/cinema --tag "$TAG" --experimental --hdr-strength 60 --hdr-tone 35 --synth30
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/cinema/libxreal_cpu_adapter.so
 
       - name: ARM64 tests on the shipped adapter

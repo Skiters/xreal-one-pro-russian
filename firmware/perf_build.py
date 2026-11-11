@@ -122,7 +122,10 @@ def soften_cube(text, strength, neutral_greys=True, tone=None, skin=0.5):
     return '\n'.join(lines) + '\n'
 
 
-def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None):
+SDK_GLOBAL = 'pilot/conf/sdk_global.json'
+
+
+def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None, synth30=False):
     """Opt-in variant (-HDR60-UI), One Pro only:
     1. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
        because their frames are processed on the CPU.
@@ -174,6 +177,15 @@ def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None):
         changed_extra.append(AIHDR_CUBE)
         edits.append(f'{AIHDR_CUBE}: re-graded, colour {hdr_strength}%, tone {tone}%, '
                      'skin colour boost halved, dark-grey tint removed')
+    if synth30:
+        # Pilot reads module debug options from sdk_global.json; Flinger parses
+        # "synth_stereo_60fps" (default true) for the 2D->3D presentation rate.
+        # Experiment: ask for its 30 fps cadence so 3D frames are evenly paced.
+        if SDK_GLOBAL in files:
+            raise ValueError('rc7 unexpectedly ships sdk_global.json')
+        files[SDK_GLOBAL] = (json.dumps({'flinger': {'synth_stereo_60fps': False}},
+                                        indent=2) + '\n').encode()
+        edits.append(f'{SDK_GLOBAL}: new, flinger.synth_stereo_60fps=false (experiment)')
     from ui_fast import apply as ui_fast_apply
     before = set(files)
     ui = ui_fast_apply(files, 'one-pro')  # rewrites CONFIG after the 60 Hz edit
@@ -332,7 +344,7 @@ def build(args):
     changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
     if args.experimental:
         changed, edits = experimental(files, cinema=args.cinema, hdr_strength=args.hdr_strength,
-                                      hdr_tone=args.hdr_tone)
+                                      hdr_tone=args.hdr_tone, synth30=args.synth30)
         changed_expected += changed
         manifest['perf']['experimental'] = {
             'edits': edits,
@@ -396,6 +408,8 @@ if __name__ == '__main__':
     p.add_argument('--tag', default='perf1')
     p.add_argument('--hdr-strength', type=int, default=100,
                    help='With --experimental: AI HDR cube strength in percent (blend with identity)')
+    p.add_argument('--synth30', action='store_true',
+                   help='With --experimental: add sdk_global.json asking Flinger for 30 fps 2D->3D (experiment)')
     p.add_argument('--hdr-tone', type=int, default=None,
                    help='With --hdr-strength: share of the AI HDR brightness change kept, percent')
     p.add_argument('--cinema', action='store_true',
