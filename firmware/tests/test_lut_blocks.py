@@ -50,8 +50,9 @@ def main():
     run16.argtypes = [C.POINTER(C.c_uint32), *[C.POINTER(C.c_ubyte)]*3, *[C.c_uint]*5]
     blocks = lib.xreal_blocks_rgb_lut
     blocks.argtypes = run16.argtypes
-    smooth = C.c_uint64.in_dll(lib, 'xreal_blocks_smooth_tiles')
-    tiles = C.c_uint64.in_dll(lib, 'xreal_blocks_tiles')
+    take = lib.xreal_blocks_take_counts
+    take.argtypes = [C.POINTER(C.c_uint64), C.POINTER(C.c_uint64)]
+    smooth, tiles = C.c_uint64(), C.c_uint64()
     table = (C.c_uint32*(lib.xreal_compact_table_bytes()//4))()
     rng = random.Random(20261111)
     cubes = {'identity': [round(v*65280/16) for b in range(17) for g in range(17)
@@ -73,8 +74,9 @@ def main():
                 return ps
             a, bb = planes(), planes()
             assert run16(table, *a, *pitches, w, h) == 0
-            smooth.value = tiles.value = 0
+            take(C.byref(smooth), C.byref(tiles))  # reset
             assert blocks(table, *bb, *pitches, w, h) == 0
+            take(C.byref(smooth), C.byref(tiles))
             err_ref = err_c16 = 0
             for i, rgb in enumerate(pixels[::7]):
                 i *= 7

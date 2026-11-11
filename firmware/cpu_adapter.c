@@ -43,7 +43,7 @@ extern int xreal_build_compact_table_range(const u16 *,u32 *,u32,u32);
 extern int xreal_compact_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern int xreal_compact16_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern int xreal_blocks_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
-extern unsigned long long xreal_blocks_smooth_tiles, xreal_blocks_tiles;
+extern void xreal_blocks_take_counts(unsigned long long *,unsigned long long *);
 /* Kernels: 0 dense (rc7 table, only when the compact table cannot be built),
  * 1 compact, 2 compact16 (same table, 16-bit NEON arithmetic, within one
  * level of the cube), 3 blocks (compact16 plus smooth 2x2 block reuse, within
@@ -278,8 +278,8 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(frame_count%300==0 && frame_count) {
             trace("perf9 busy ema us",0,frame_count,pace_ema_us);
             trace("perf9 pacing",0,frame_count,pacing);
-            unsigned long long t=__atomic_exchange_n(&xreal_blocks_tiles,0,__ATOMIC_RELAXED);
-            unsigned long long sm=__atomic_exchange_n(&xreal_blocks_smooth_tiles,0,__ATOMIC_RELAXED);
+            unsigned long long t=0,sm=0;
+            xreal_blocks_take_counts(&sm,&t);
             trace("blocks smooth tiles per mille",0,frame_count,t ? (long)(sm*1000/t) : -1);
             trace("cpu0 kHz",0,frame_count,sysfs_number("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"));
         }

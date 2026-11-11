@@ -549,7 +549,13 @@ int xreal_compact16_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
  * compact16 path. Video (especially compressed film) is mostly smooth, so
  * most tiles need 2 instead of 8 table lookups. */
 #define BLOCK_FLAT 4   /* film-like content: ~95-100% smooth tiles, <= 2 levels */
-unsigned long long xreal_blocks_smooth_tiles, xreal_blocks_tiles;
+/* Hidden counters (PC-relative access, no GOT): read via the accessor. */
+static unsigned long long xreal_blocks_smooth_tiles, xreal_blocks_tiles;
+
+void xreal_blocks_take_counts(unsigned long long *smooth, unsigned long long *tiles) {
+    *smooth = __atomic_exchange_n(&xreal_blocks_smooth_tiles, 0, __ATOMIC_RELAXED);
+    *tiles = __atomic_exchange_n(&xreal_blocks_tiles, 0, __ATOMIC_RELAXED);
+}
 
 static inline void c16_group4(const u32 *table, const u32 *gmap, const u32 *bmap,
                               u8 *rp, u8 *gp, u8 *bp) {
