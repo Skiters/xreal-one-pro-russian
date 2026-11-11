@@ -63,7 +63,7 @@ jobs:
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
             --output outputs/exp --tag "$TAG" --experimental
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/exp/libxreal_cpu_adapter.so
-          # Movie-first variant: 30 Hz source shown 3x on the 90 Hz OLED timing.
+          # Movie-first variant: AI HDR and 2D->3D at a 30 Hz source, shown 3x at 90 Hz.
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
             --output outputs/cinema --tag "$TAG" --experimental --cinema
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/cinema/libxreal_cpu_adapter.so

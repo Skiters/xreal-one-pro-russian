@@ -65,8 +65,9 @@ def experimental(files, cinema=False):
        every 30 frames for measurements.
     The display-mode menu rows are rc7 (Vivid/«Насыщенный» stays).
 
-    cinema=True (-CINEMA30-UI): AI HDR, Reading, Movie and 2D->3D (synth
-    stereo) request EDID 1920_1080_30 instead. Pilot's own dp_oled_map shows
+    cinema=True (-CINEMA30-UI): AI HDR and 2D->3D (synth stereo, both 3D
+    algorithms share it) request EDID 1920_1080_30 instead; Reading keeps
+    60 Hz and Movie keeps rc7. Pilot's own dp_oled_map shows
     a 30 Hz input on the 90 Hz OLED timing, every frame exactly three times.
     The CPU path (~18 ms AI HDR, ~15 ms Real3D) then never misses a source
     frame, so the cadence is even instead of ~50 of 60 frames at random.
@@ -74,13 +75,11 @@ def experimental(files, cinema=False):
     from package_format import validate_config
     edits = []
     config = files[CONFIG].decode('utf-8')
-    target = '1920_1080_30' if cinema else '1920_1080_60'
-    blocks = [('"color_mode" :', '"reading" :'), ('"dynamic_range" :', '"ai hdr" :')]
-    if cinema:
-        blocks.append(('"color_mode" :', '"movie" :'))
+    blocks = [('"color_mode" :', '"reading" :', '1920_1080_60'),
+              ('"dynamic_range" :', '"ai hdr" :', '1920_1080_30' if cinema else '1920_1080_60')]
     if '"1920_1080_30": "1920_1080_90"' not in config:
         raise ValueError('dp_oled_map no longer maps 30 Hz input to the 90 Hz OLED timing')
-    for section, block in blocks:
+    for section, block, target in blocks:
         s = config.index(section)
         b = config.index(block, s)
         e = config.index('}', b)
