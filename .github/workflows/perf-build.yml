@@ -63,6 +63,10 @@ jobs:
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
             --output outputs/exp --tag "$TAG" --experimental
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/exp/libxreal_cpu_adapter.so
+          # Movie-first variant: 30 Hz source shown 3x on the 90 Hz OLED timing.
+          python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
+            --output outputs/cinema --tag "$TAG" --experimental --cinema
+          cmp outputs/perf/libxreal_cpu_adapter.so outputs/cinema/libxreal_cpu_adapter.so
 
       - name: ARM64 tests on the shipped adapter
         env:
@@ -123,6 +127,8 @@ jobs:
           path: |
             outputs/perf/*.bin
             outputs/exp/*.bin
+            outputs/cinema/*.bin
+            outputs/cinema/build-report.json
             outputs/perf/build-report.json
             outputs/exp/build-report.json
             outputs/perf/SHA256SUMS.txt

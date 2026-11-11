@@ -138,6 +138,17 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## Variant `-CINEMA30-UI` (opt-in, One Pro, movie-first)
+
+At a 60 Hz source the CPU path processes ~48–50 frames/s, so Pilot skips
+~10 source frames per second at irregular points and motion looks uneven.
+This variant makes AI HDR, Reading, Movie and 2D->3D request EDID
+`1920_1080_30`; Pilot's `dp_oled_map` shows it on the 90 Hz OLED timing, each
+frame exactly 3 times. With ~18 ms (AI HDR) / ~15 ms (Real3D) per frame and a
+33 ms budget no source frame is skipped. 24 fps film then uses the source's
+30 Hz cadence (1-1-1-2) instead of an irregular one. Everything else as
+`-HDR60-UI`.
+
 ## Variant `-HDR60-UI` (opt-in, One Pro)
 
 Adds upstream's UI experiment (`firmware/ui_fast.py`): exact rc7 OSD refresh

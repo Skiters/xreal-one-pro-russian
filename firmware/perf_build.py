@@ -54,7 +54,7 @@ FLAGS = ['--target=aarch64-linux-gnu', '-fPIC', '-O2', '-shared', '-nostdlib', '
 CONFIG = 'pilot/conf/pilot_default_config.json'
 
 
-def experimental(files):
+def experimental(files, cinema=False):
     """Opt-in variant (-HDR60-UI), One Pro only:
     1. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
        because their frames are processed on the CPU.
@@ -64,20 +64,38 @@ def experimental(files):
        The adapter is NOT built with XREAL_UI_FAST, so HDR timing stays logged
        every 30 frames for measurements.
     The display-mode menu rows are rc7 (Vivid/«Насыщенный» stays).
+
+    cinema=True (-CINEMA30-UI): AI HDR, Reading, Movie and 2D->3D (synth
+    stereo) request EDID 1920_1080_30 instead. Pilot's own dp_oled_map shows
+    a 30 Hz input on the 90 Hz OLED timing, every frame exactly three times.
+    The CPU path (~18 ms AI HDR, ~15 ms Real3D) then never misses a source
+    frame, so the cadence is even instead of ~50 of 60 frames at random.
     """
     from package_format import validate_config
     edits = []
     config = files[CONFIG].decode('utf-8')
-    for section, block in (('"color_mode" :', '"reading" :'), ('"dynamic_range" :', '"ai hdr" :')):
+    target = '1920_1080_30' if cinema else '1920_1080_60'
+    blocks = [('"color_mode" :', '"reading" :'), ('"dynamic_range" :', '"ai hdr" :')]
+    if cinema:
+        blocks.append(('"color_mode" :', '"movie" :'))
+    if '"1920_1080_30": "1920_1080_90"' not in config:
+        raise ValueError('dp_oled_map no longer maps 30 Hz input to the 90 Hz OLED timing')
+    for section, block in blocks:
         s = config.index(section)
         b = config.index(block, s)
         e = config.index('}', b)
-        old, new = '"dp" : "1920_1080_90_DEFAULT",', '"dp" : "1920_1080_60",'
+        old, new = '"dp" : "1920_1080_90_DEFAULT",', f'"dp" : "{target}",'
         if config[b:e].count(old) != 1:
             raise ValueError(f'Config anchor not unique in {block}')
         at = b + config[b:e].index(old)
         config = config[:at] + new + config[at+len(old):]
-        edits.append(f'{CONFIG} {block.strip(": ")}: dp 1920_1080_90_DEFAULT -> 1920_1080_60')
+        edits.append(f'{CONFIG} {block.strip(": ")}: dp 1920_1080_90_DEFAULT -> {target}')
+    if cinema:
+        old, new = '"synth_stereo" : "1920_1080_60",', '"synth_stereo" : "1920_1080_30",'
+        if config.count(old) != 1:
+            raise ValueError('synth_stereo anchor not unique')
+        config = config.replace(old, new)
+        edits.append(f'{CONFIG} dp.synth_stereo (2D->3D): 1920_1080_60 -> 1920_1080_30')
     files[CONFIG] = config.encode('utf-8')
     from ui_fast import apply as ui_fast_apply
     before = set(files)
@@ -236,7 +254,7 @@ def build(args):
               'abi': abi_report})
     changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
     if args.experimental:
-        changed, edits = experimental(files)
+        changed, edits = experimental(files, cinema=args.cinema)
         changed_expected += changed
         manifest['perf']['experimental'] = {
             'edits': edits,
@@ -259,7 +277,7 @@ def build(args):
     packed = bytearray(rc7[:64] + stream.getvalue().translate(XOR))
     packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
     packed[:4] = container_crc(packed).to_bytes(4, 'little')
-    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{"-HDR60-UI" if args.experimental else ""}.bin'
+    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{("-CINEMA30-UI" if args.cinema else "-HDR60-UI") if args.experimental else ""}.bin'
     target = out/name
     target.write_bytes(packed)
 
@@ -298,6 +316,8 @@ if __name__ == '__main__':
                    default=ROOT/'outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin')
     p.add_argument('--output', type=Path, default=ROOT/'outputs/perf')
     p.add_argument('--tag', default='perf1')
+    p.add_argument('--cinema', action='store_true',
+                   help='With --experimental: 30 Hz source (90 Hz OLED, 3x) for AI HDR/Reading/Movie/2D->3D')
     p.add_argument('--experimental', action='store_true',
                    help='Also apply experimental(): 60 Hz source for AI HDR/Reading + upstream ui_fast')
     build(p.parse_args())
