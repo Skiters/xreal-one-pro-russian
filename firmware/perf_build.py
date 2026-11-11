@@ -359,7 +359,11 @@ def build(args):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for name, data in sorted(files.items()):
-            info = copy.copy(attrs[name])
+            if name in attrs:
+                info = copy.copy(attrs[name])
+            else:  # file new in this build: same attributes as the main config
+                info = copy.copy(attrs[CONFIG])
+                info.filename = name
             info.date_time = (2026, 1, 1, 0, 0, 0)
             info.comment = b''
             info.extra = b''
