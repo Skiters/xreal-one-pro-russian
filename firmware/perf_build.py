@@ -207,6 +207,13 @@ def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None, synth30=F
     cfg['osd']['display_buffer_render_interval_ms'] = 0
     files[CONFIG] = (json.dumps(cfg, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode()
     edits.append(f'{CONFIG}: osd.display_buffer_render_interval_ms 1 -> 0')
+    # perf23: usage statistics (telemetry) every hour instead of every 10 s.
+    # There is no enable flag; 0 could turn the timer into a busy loop.
+    if cfg.get('usage_stats', {}).get('update_sec') != 10:
+        raise ValueError('Unexpected usage_stats.update_sec')
+    cfg['usage_stats']['update_sec'] = 3600
+    files[CONFIG] = (json.dumps(cfg, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode()
+    edits.append(f'{CONFIG}: usage_stats.update_sec 10 -> 3600')
     # 2. LVGL input read timer: lv_indev_drv_register / lv_indev_drv_update
     #    create it with 30 ms (ui_fast changed only refresh/animation).
     import struct
