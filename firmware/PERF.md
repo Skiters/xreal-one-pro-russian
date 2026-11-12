@@ -138,6 +138,19 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf21 (AI HDR coef kernel)
+
+perf19 stage timing on the device (AI HDR, film): map 0.10 ms, convert
+21.2 ms, flush 0.47, unmap 0.61, result 0.15, total 22.6, idle between calls
+0.48 ms: ~94% of the frame is the colour kernel and Pilot calls immediately,
+so only kernel speed matters (the audit's map/invalidate suspicion did not
+hold). New `coef` kernel: per cell 3 x 8 exact trilinear coefficients in one
+64-byte line, Q15 terms, 4 pixels reduced with pairwise adds; within one
+level of the float reference, NEON equals portable. On an M2 it is ~1.8x
+slower than compact16 (compute-bound there); on the A53 the single cache
+line per pixel may matter more, so a short autotune (10 frames each)
+decides: `CPU perf21: autotune compact16_median_us= coef_median_us= choice=`.
+
 ## perf20 (Real3D rollback)
 
 perf19 on the device: warp 22–28 ms, 3D ~36 frames/s, and the hard

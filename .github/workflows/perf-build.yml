@@ -69,6 +69,7 @@ jobs:
           python firmware/tests/test_lut_compact.py /tmp/xreal-lut.so --bin inputs/rc7.bin
           python firmware/tests/test_lut_tetra.py /tmp/xreal-lut.so --bin inputs/rc7.bin
           python firmware/tests/test_lut_blocks.py /tmp/xreal-lut.so --bin inputs/rc7.bin
+          python firmware/tests/test_lut_coef.py /tmp/xreal-lut.so --bin inputs/rc7.bin
           gcc -O2 -pthread firmware/runtime.c firmware/tests/runtime_test.c -o /tmp/xreal-runtime
           /tmp/xreal-runtime
           gcc -O2 -shared -fPIC -pthread -Ifirmware firmware/cpu_adapter.c firmware/lut_fast.c \
@@ -135,11 +136,11 @@ jobs:
                     f"{item['readback_files']} readback files\n\nChanged vs rc7: "
                     + ', '.join(f'`{n}`' for n in item['changed_files']) + f"\n\n{item['installer_check']}\n")
           aihdr = json.loads(Path('outputs/perf/aihdr-instructions.json').read_text())
-          print('#### AI HDR, ARM64 instructions per pixel (not cycles)\n\n| cube | content | dense | compact | compact16 | blocks | tetra | max err | c16 err | blocks err |\n|---|---|---|---|---|---|---|---|---|---|')
+          print('#### AI HDR, ARM64 instructions per pixel (not cycles)\n\n| cube | content | dense | compact | compact16 | blocks | coef | max err | c16 err | coef err |\n|---|---|---|---|---|---|---|---|---|---|')
           for cube, kinds in aihdr['cubes'].items():
               for kind, v in kinds.items():
                   print(f"| {cube.rsplit('/',1)[-1]} | {kind} | {v['dense_instructions_per_pixel']} | "
-                        f"{v['compact_instructions_per_pixel']} | {v['compact16_instructions_per_pixel']} | {v['blocks_instructions_per_pixel']} | {v['tetra_instructions_per_pixel']} | {v['max_error_vs_float']} | {v['compact16_max_error_vs_float']} | {v['blocks_max_error_vs_float']} |")
+                        f"{v['compact_instructions_per_pixel']} | {v['compact16_instructions_per_pixel']} | {v['blocks_instructions_per_pixel']} | {v['coef_instructions_per_pixel']} | {v['max_error_vs_float']} | {v['compact16_max_error_vs_float']} | {v['coef_max_error_vs_float']} |")
           warp = json.loads(Path('outputs/perf/real3d-instructions.json').read_text())
           cuts = [c['reduction_percent'] for c in warp['cases']]
           print(f"\n#### Real3D Pro+ warp vs rc7\n\nOutput byte-identical in {len(cuts)} cases; "

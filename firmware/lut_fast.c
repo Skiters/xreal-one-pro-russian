@@ -750,3 +750,148 @@ int xreal_blocks_rgb_lut(const u32 *table, u8 *r, u8 *g, u8 *b,
     __atomic_fetch_add(&xreal_blocks_tiles, tiles, __ATOMIC_RELAXED);
     return 0;
 }
+
+/* coef (perf21): the trilinear cube rewritten per cell as
+ *   F = A + B r + C g + D b + E rg + F rb + G gb + H rgb   (per channel)
+ * with exact integer coefficients from the 8 corner nodes (8-bit values).
+ * A cell's 3 x 8 int16 coefficients are padded to one 64-byte cache line, so
+ * each pixel reads one contiguous line instead of compact16's four scattered
+ * words (suggested by AI-HDR-AUDIT-2026-11-12.md). Terms are Q15 (weights as
+ * c16_weight, products rounded); lane 7 pairs A with 32767. Result is
+ * (dot + 16384) >> 15, clamped. Within one level of the float reference on
+ * the vendor cubes; NEON and portable paths compute identical integers. */
+#define COEF_CELLS 4096U
+#define COEF_STRIDE 32U          /* int16 per cell: 3 x 8 used + 8 padding */
+
+unsigned long long xreal_coef_table_bytes(void) {
+    return (u64)COEF_CELLS * COEF_STRIDE * 2 + 768U * 4;
+}
+
+int xreal_build_coef_table(const u16 *cube, short *table) {
+    if (!cube || !table) return -22;
+    for (u32 b = 0; b < 16; ++b) for (u32 g = 0; g < 16; ++g) for (u32 r = 0; r < 16; ++r) {
+        short *cell = table + (u64)((b * 16 + g) * 16 + r) * COEF_STRIDE;
+        for (u32 c = 0; c < 3; ++c) {
+            int n[2][2][2];
+            for (u32 db = 0; db < 2; ++db) for (u32 dg = 0; dg < 2; ++dg) for (u32 dr = 0; dr < 2; ++dr) {
+                u32 v = ((u32)cube[(((b + db) * 17 + g + dg) * 17 + r + dr) * 3 + c] + 128) >> 8;
+                n[db][dg][dr] = (int)(v > 255 ? 255 : v);
+            }
+            int A = n[0][0][0];
+            int B = n[0][0][1] - A, C = n[0][1][0] - A, D = n[1][0][0] - A;
+            int E = n[0][1][1] - n[0][0][1] - n[0][1][0] + A;
+            int F = n[1][0][1] - n[0][0][1] - n[1][0][0] + A;
+            int G = n[1][1][0] - n[0][1][0] - n[1][0][0] + A;
+            int H = n[1][1][1] - n[0][1][1] - n[1][0][1] - n[1][1][0] + n[0][0][1] + n[0][1][0] + n[1][0][0] - A;
+            short *k = cell + c * 8;
+            k[0] = (short)B; k[1] = (short)C; k[2] = (short)D; k[3] = (short)E;
+            k[4] = (short)F; k[5] = (short)G; k[6] = (short)H; k[7] = (short)A;
+        }
+        for (u32 i = 24; i < COEF_STRIDE; ++i) cell[i] = 0;
+    }
+    u32 *maps = (u32 *)(void *)(table + (u64)COEF_CELLS * COEF_STRIDE);
+    for (u32 v = 0; v < 256; ++v) {
+        u32 lo = v * 16 / 255, f = v * 16 - lo * 255;
+        if (lo == 16) { lo = 15; f = 255; }
+        maps[v] = (lo << 16) | f;
+        maps[256 + v] = ((lo * 16) << 16) | f;
+        maps[512 + v] = ((lo * 256) << 16) | f;
+    }
+    return 0;
+}
+
+static inline void coef_pixel(const short *table, const u32 *maps, u8 *rp, u8 *gp, u8 *bp) {
+    u32 mr = maps[*rp], mg = maps[256 + *gp], mb = maps[512 + *bp];
+    const short *k = table + (u64)((mr >> 16) + (mg >> 16) + (mb >> 16)) * COEF_STRIDE;
+    int wr = (int)c16_weight(mr & 255), wg = (int)c16_weight(mg & 255), wb = (int)c16_weight(mb & 255);
+    int rg = (wr * wg + 16384) >> 15, rb = (wr * wb + 16384) >> 15, gb = (wg * wb + 16384) >> 15;
+    int rgb = (rg * wb + 16384) >> 15;
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+    short tv[8] = { (short)wr, (short)wg, (short)wb, (short)rg, (short)rb, (short)gb, (short)rgb, 32767 };
+    int16x8_t t = vld1q_s16(tv);
+    int out[3];
+    for (u32 c = 0; c < 3; ++c) {
+        int16x8_t kc = vld1q_s16(k + c * 8);
+        int32x4_t acc = vmull_s16(vget_low_s16(kc), vget_low_s16(t));
+        acc = vmlal_s16(acc, vget_high_s16(kc), vget_high_s16(t));
+        out[c] = (vaddvq_s32(acc) + 16384) >> 15;
+    }
+#else
+    int tv[8] = { wr, wg, wb, rg, rb, gb, rgb, 32767 }, out[3];
+    for (u32 c = 0; c < 3; ++c) {
+        int s = 0;
+        for (u32 i = 0; i < 8; ++i) s += k[c * 8 + i] * tv[i];
+        out[c] = (s + 16384) >> 15;
+    }
+#endif
+    *rp = (u8)(out[0] < 0 ? 0 : out[0] > 255 ? 255 : out[0]);
+    *gp = (u8)(out[1] < 0 ? 0 : out[1] > 255 ? 255 : out[1]);
+    *bp = (u8)(out[2] < 0 ? 0 : out[2] > 255 ? 255 : out[2]);
+}
+
+int xreal_coef_rgb_lut(const short *table, u8 *r, u8 *g, u8 *b,
+                       u32 rs, u32 gs, u32 bs, u32 width, u32 height) {
+    if (!table || !r || !g || !b || !width || !height ||
+        width>1920 || height>1080 || rs<width || gs<width || bs<width ||
+        rs>4096 || gs>4096 || bs>4096) return -22;
+    const u32 *maps = (const u32 *)(const void *)(table + (u64)COEF_CELLS * COEF_STRIDE);
+    for (u32 y = 0; y < height; ++y) {
+        u8 *rp = r+(u64)y*rs, *gp = g+(u64)y*gs, *bp = b+(u64)y*bs;
+        u32 last_r = 0, last_g = 0, last_b = 0, out_r = 0, out_g = 0, out_b = 0;
+        int have_last = 0;
+        u32 x = 0;
+        for (; x + 4 <= width; x += 4) {
+            u32 kr, kg, kb;
+            __builtin_memcpy(&kr, rp+x, 4);
+            __builtin_memcpy(&kg, gp+x, 4);
+            __builtin_memcpy(&kb, bp+x, 4);
+            if (have_last && kr == last_r && kg == last_g && kb == last_b) {
+                __builtin_memcpy(rp+x, &out_r, 4);
+                __builtin_memcpy(gp+x, &out_g, 4);
+                __builtin_memcpy(bp+x, &out_b, 4);
+                continue;
+            }
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+            /* Four pixels together: per-pixel dot products are reduced with
+             * pairwise adds into one int32x4, finalized and stored at once.
+             * Same integers as coef_pixel. */
+            {
+                const short *kp[4]; int16x8_t tv[4];
+                for (u32 lane = 0; lane < 4; ++lane) {
+                    u32 mr = maps[rp[x+lane]], mg = maps[256 + gp[x+lane]], mb = maps[512 + bp[x+lane]];
+                    kp[lane] = table + (u64)((mr >> 16) + (mg >> 16) + (mb >> 16)) * COEF_STRIDE;
+                    int wr = (int)c16_weight(mr & 255), wg = (int)c16_weight(mg & 255), wb = (int)c16_weight(mb & 255);
+                    int rg = (wr * wg + 16384) >> 15, rb = (wr * wb + 16384) >> 15, gb = (wg * wb + 16384) >> 15;
+                    int rgb = (rg * wb + 16384) >> 15;
+                    int16x4_t lo = vcreate_s16((u64)(u16)wr | (u64)(u16)wg << 16 | (u64)(u16)wb << 32 | (u64)(u16)rg << 48);
+                    int16x4_t hi = vcreate_s16((u64)(u16)rb | (u64)(u16)gb << 16 | (u64)(u16)rgb << 32 | (u64)(u16)32767 << 48);
+                    tv[lane] = vcombine_s16(lo, hi);
+                }
+                u8 *dst[3] = { rp + x, gp + x, bp + x };
+                for (u32 c = 0; c < 3; ++c) {
+                    int32x4_t acc[4];
+                    for (u32 lane = 0; lane < 4; ++lane) {
+                        int16x8_t kc = vld1q_s16(kp[lane] + c * 8);
+                        int32x4_t a = vmull_s16(vget_low_s16(kc), vget_low_s16(tv[lane]));
+                        acc[lane] = vmlal_s16(a, vget_high_s16(kc), vget_high_s16(tv[lane]));
+                    }
+                    int32x4_t sum = vpaddq_s32(vpaddq_s32(acc[0], acc[1]), vpaddq_s32(acc[2], acc[3]));
+                    int32x4_t v = vshrq_n_s32(vaddq_s32(sum, vdupq_n_s32(16384)), 15);
+                    uint16x4_t n16 = vqmovun_s32(v);
+                    uint8x8_t n8 = vqmovn_u16(vcombine_u16(n16, n16));
+                    vst1_lane_u32((uint32_t *)(void *)dst[c], vreinterpret_u32_u8(n8), 0);
+                }
+            }
+#else
+            for (u32 lane = 0; lane < 4; ++lane)
+                coef_pixel(table, maps, rp+x+lane, gp+x+lane, bp+x+lane);
+#endif
+            last_r = kr; last_g = kg; last_b = kb; have_last = 1;
+            __builtin_memcpy(&out_r, rp+x, 4);
+            __builtin_memcpy(&out_g, gp+x, 4);
+            __builtin_memcpy(&out_b, bp+x, 4);
+        }
+        for (; x < width; ++x) coef_pixel(table, maps, rp+x, gp+x, bp+x);
+    }
+    return 0;
+}

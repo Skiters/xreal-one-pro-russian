@@ -76,6 +76,7 @@ def test(path, bin_path):
     m = Machine(path)
     cube_ptr, dense, compact, compact2 = DATA, DATA + 0x10000, DATA + 0x500000, DATA + 0x5c0000
     tetra = DATA + 0x640000
+    coef = DATA + 0x660000
     dense_size, _ = m.call('xreal_rgb_table_bytes')
     compact_size, _ = m.call('xreal_compact_table_bytes')
     assert compact_size == (17*17*256 + 512)*4 and compact_size < 0x500000 - 0x10000
@@ -100,6 +101,7 @@ def test(path, bin_path):
             assert m.call('xreal_build_compact2_table_range', cube_ptr, compact2,
                           17*i//4, 17*(i+1)//4)[0] == 0
         assert m.call('xreal_build_tetra_table', cube_ptr, tetra)[0] == 0
+        assert m.call('xreal_build_coef_table', cube_ptr, coef)[0] == 0
         assert bytes(m.u.mem_read(compact - 64, 64)) == guard
         assert bytes(m.u.mem_read(compact + compact_size, 64)) == guard
         for kind, pixels in frames(rng, width, height).items():
@@ -114,7 +116,8 @@ def test(path, bin_path):
                                   ('xreal_compact_pf_rgb_lut', compact),
                                   ('xreal_tetra_rgb_lut', tetra),
                                   ('xreal_compact16_rgb_lut', compact),
-                                  ('xreal_blocks_rgb_lut', compact)):
+                                  ('xreal_blocks_rgb_lut', compact),
+                                  ('xreal_coef_rgb_lut', coef)):
                 for ptr, data in zip(planes, raw):
                     m.u.mem_write(ptr, bytes(data))
                 rc, count = m.call(kernel, table, *planes, *pitches, width, height)
@@ -152,6 +155,12 @@ def test(path, bin_path):
                 y, x = divmod(i, width)
                 out = [outputs[6][c][y*pitches[c]+x] for c in range(3)]
                 blk_error = max(blk_error, max(abs(a-b) for a, b in zip(out, reference(cube, rgb))))
+            coef_error = 0
+            for i, rgb in enumerate(pixels):
+                y, x = divmod(i, width)
+                out = [outputs[7][c][y*pitches[c]+x] for c in range(3)]
+                coef_error = max(coef_error, max(abs(a-b) for a, b in zip(out, reference(cube, rgb))))
+            assert coef_error <= 1, (name, kind, 'coef', coef_error)
             # blocks assume a smooth cube (local slope ~1); the random cube is
             # only a stress input, so the bound applies to the vendor cubes.
             if name.endswith('.cube'):
@@ -169,7 +178,9 @@ def test(path, bin_path):
                 'compact16_instructions_per_pixel': round(counts[5]/(width*height), 2),
                 'compact16_max_error_vs_float': c16_error,
                 'blocks_instructions_per_pixel': round(counts[6]/(width*height), 2),
-                'blocks_max_error_vs_float': blk_error}
+                'blocks_max_error_vs_float': blk_error,
+                'coef_instructions_per_pixel': round(counts[7]/(width*height), 2),
+                'coef_max_error_vs_float': coef_error}
     result = {'library': str(path), 'table_bytes': {'dense': dense_size, 'compact': compact_size},
               'cubes': report,
               'limitation': 'Executed ARM64 instructions in Unicorn, not A53 cycles; cache and '

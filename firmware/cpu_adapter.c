@@ -50,6 +50,9 @@ extern int xreal_build_compact_table_range(const u16 *,u32 *,u32,u32);
 extern int xreal_compact_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern int xreal_compact16_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern int xreal_blocks_rgb_lut(const u32 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
+extern u64 xreal_coef_table_bytes(void);
+extern int xreal_build_coef_table(const u16 *,short *);
+extern int xreal_coef_rgb_lut(const short *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
 extern void xreal_blocks_take_counts(unsigned long long *,unsigned long long *);
 /* Kernels: 0 dense (rc7 table, only when the compact table cannot be built),
  * 1 compact, 2 compact16 (same table, 16-bit NEON arithmetic, within one
@@ -60,8 +63,11 @@ extern void xreal_blocks_take_counts(unsigned long long *,unsigned long long *);
  * lower median wins (short, so the first second stays smooth). */
 #define TUNE 10
 static u32 *compact;
+/* perf21: kernel 4 = coef (one 64-byte cell line per pixel), tuned against
+ * compact16 for TUNE frames each after LUT init; the loser's table is freed. */
+static short *coeft;
 static int choice=-1;
-static u32 tune[4][TUNE], tuned[4];
+static u32 tune[5][TUNE], tuned[5];
 static u32 median(u32 *v,u32 n) {
     for(u32 i=1;i<n;i++)for(u32 j=i;j && v[j-1]>v[j];j--){u32 x=v[j];v[j]=v[j-1];v[j-1]=x;}
     return v[n/2];
@@ -129,11 +135,13 @@ static void *compact_worker(void *arg) {
  * four A53 cores, so fixed quarters made every frame wait for the most
  * interrupted core; now the idle cores finish its remaining bands. */
 #define CHUNK 24
-struct rgb_frame {const u64 *table;const u32 *compact;int kernel;u8 *planes[3];u32 strides[3],width,height,chunks,next;int rc;};
+struct rgb_frame {const u64 *table;const u32 *compact;const short *coef;int kernel;u8 *planes[3];u32 strides[3],width,height,chunks,next;int rc;};
 struct rgb_job {struct rgb_frame *f;int rc;};
 static int rgb_rows(const struct rgb_frame *f,u32 begin,u32 rows) {
     u8 *p[3];
     for(u32 c=0;c<3;c++)p[c]=f->planes[c]+(u64)begin*f->strides[c];
+    if(f->kernel==4)
+        return xreal_coef_rgb_lut(f->coef,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     if(f->kernel==3)
         return xreal_blocks_rgb_lut(f->compact,p[0],p[1],p[2],f->strides[0],f->strides[1],f->strides[2],f->width,rows);
     if(f->kernel==2)
@@ -155,7 +163,7 @@ static void *rgb_worker(void *arg) {
     return (void *)0;
 }
 static int rgb_parallel(const u64 *table,const u32 *small,int kernel,u8 *planes[3],const u32 strides[3],u32 w,u32 h) {
-    struct rgb_frame f={table,small,kernel,{planes[0],planes[1],planes[2]},
+    struct rgb_frame f={table,small,coeft,kernel,{planes[0],planes[1],planes[2]},
                         {strides[0],strides[1],strides[2]},w,h,(h+CHUNK-1)/CHUNK,0,0};
     struct rgb_job jobs[4];
     for(u32 i=0;i<4;i++)jobs[i]=(struct rgb_job){&f,0};
@@ -247,7 +255,8 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         ar_hal_sys_munmap(p,14739);
         free(dense);dense=(void *)0;
         free(compact);compact=(void *)0;
-        choice=-1;tuned[2]=tuned[3]=0;pacing=0;pace_ema_us=0;pace_last_start_us=0;dd_reset();
+        free(coeft);coeft=(short *)0;
+        choice=-1;tuned[2]=tuned[3]=tuned[4]=0;pacing=0;pace_ema_us=0;pace_last_start_us=0;dd_reset();
         int rc=0;
         u32 *small=malloc(xreal_compact_table_bytes());
         int crc=small ? 0 : -12;
@@ -257,8 +266,12 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
             xreal_parallel_run(compact_worker,cjobs,sizeof(cjobs[0]),4);
             for(u32 i=0;i<4;i++)if(cjobs[i].rc)crc=cjobs[i].rc;
         }
-        if(!crc)compact=small;
-        else {
+        if(!crc) {
+            compact=small;
+            short *k=malloc(xreal_coef_table_bytes());
+            if(k && !xreal_build_coef_table(cube,k))coeft=k;
+            else{free(k);record("perf21: coef table unavailable",-12);}
+        } else {
             /* Compact table unavailable: rc7 behaviour with the dense table. */
             free(small);record("perf: compact table unavailable, dense only",crc);
             u64 *next=malloc(xreal_rgb_table_bytes());
@@ -277,7 +290,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         u64 p=*(const u64 *)call->args;
         if(!valid(p,64))return -22;
         record("LUT closing",0);free(dense);dense=(void *)0;
-        free(compact);compact=(void *)0;dd_reset();
+        free(compact);compact=(void *)0;free(coeft);coeft=(short *)0;dd_reset();
         choice=-1;return result(p,0);
     }
     if(strcmp(call->name,"ArArmlut3dProcessRgbToYuv"))return xreal_real3d_rpc(core,call,sync);
@@ -299,8 +312,8 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     mapped_us=now_us();
     /* perf10: compact16 only. blocks (v1 39 ms, v2 23.2 ms vs 13.1 ms) lost
      * on the device both times; it stays in lut_fast.c with its tests. */
-    if(choice<0)choice=2;
-    int kernel=choice;
+    if(choice<0 && !coeft)choice=2;
+    int kernel=choice>=0 ? choice : (frame_count%2 ? 4 : 2);
     clock_gettime(1,&before);
     {   long gap=dd_last_call_us ? call_start_us-dd_last_call_us : -1;
         dd_last_call_us=call_start_us;
@@ -325,12 +338,13 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     if(!rc && choice<0) {
         long us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
         if(tuned[kernel]<TUNE)tune[kernel][tuned[kernel]++]=(u32)(us>0 ? us : 0);
-        if(tuned[2]>=TUNE && tuned[3]>=TUNE) {
-            u32 m2=median(tune[2],TUNE),m3=median(tune[3],TUNE);
-            choice=m3<=m2 ? 3 : 2;
+        if(tuned[2]>=TUNE && tuned[4]>=TUNE) {
+            u32 m2=median(tune[2],TUNE),m4=median(tune[4],TUNE);
+            choice=m4<m2 ? 4 : 2;
+            if(choice!=4){free(coeft);coeft=(short *)0;}
             char line[200];
-            int n=snprintf(line,sizeof(line),"CPU perf7: autotune compact16_median_us=%u blocks_median_us=%u choice=%s\n",
-                           m2,m3,choice==3 ? "blocks" : "compact16");
+            int n=snprintf(line,sizeof(line),"CPU perf21: autotune compact16_median_us=%u coef_median_us=%u choice=%s\n",
+                           m2,m4,choice==4 ? "coef" : "compact16");
             if(n>0 && n<(int)sizeof(line)) {
                 int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
                 if(fd>=0){write(fd,line,(u64)n);close(fd);}
