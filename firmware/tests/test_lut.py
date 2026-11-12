@@ -25,6 +25,22 @@ def reference(cube, rgb):
     return [int(x+.5) for x in sums]
 
 
+def cubes_from_bin(path):
+    """Every 17^3 .cube resource inside a Pilot 2 container (XOR 0x66)."""
+    cubes={}
+    data=Path(path).read_bytes()
+    with zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(i^0x66 for i in range(256))))) as z:
+        for name in z.namelist():
+            if name.endswith('.cube'):
+                rows=[]
+                for line in z.read(name).decode().splitlines():
+                    try: values=[float(v) for v in line.split()]
+                    except ValueError: continue
+                    if len(values)==3: rows.extend(round(v*255)*256 for v in values)
+                if len(rows)==14739: cubes[name]=rows
+    return cubes
+
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('library')
@@ -45,16 +61,7 @@ def main():
                          for r in range(17) for v in (g+b,r+b,r+g)],
         'random':[rng.randrange(256)*256 for _ in range(14739)]}
     if args.bin:
-        data=args.bin.read_bytes()
-        with zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(i^0x66 for i in range(256))))) as z:
-            for name in z.namelist():
-                if name.endswith('.cube'):
-                    rows=[]
-                    for line in z.read(name).decode().splitlines():
-                        try: values=[float(v) for v in line.split()]
-                        except ValueError: continue
-                        if len(values)==3: rows.extend(round(v*255)*256 for v in values)
-                    if len(rows)==14739: cubes[name]=rows
+        cubes.update(cubes_from_bin(args.bin))
     errors={}
     for name,cube in cubes.items():
         data=(C.c_ushort*len(cube))(*cube)

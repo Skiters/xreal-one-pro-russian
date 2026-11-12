@@ -71,7 +71,14 @@ class SelectedProbe(Probe):
 
     def __enter__(self):
         # Never silently switch to the first attached device.
-        matches = [d for d in devices() if d['path'] == self.selected['path']]
+        found = devices()
+        matches = [d for d in found if d['path'] == self.selected['path']]
+        if not matches and sys.platform == 'darwin' and self.selected.get('product_id'):
+            # macOS assigns a new DevSrvsID path after the glasses reboot. Accept
+            # only the single device of the same model (and serial, if reported).
+            serial = self.selected.get('serial_number')
+            matches = [d for d in found if d.get('product_id') == self.selected['product_id']
+                       and (not serial or d.get('serial_number') == serial)]
         if len(matches) != 1:
             raise RuntimeError('Выбранные очки отключены. Подключите их и обновите список.')
         if self.selected.get('product_id') != matches[0].get('product_id'):

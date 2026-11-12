@@ -2,6 +2,7 @@
 /*
 !/.gitignore
 !/.gitattributes
+!/.github/
 !/README.md
 !/installer/
 /installer/__pycache__/

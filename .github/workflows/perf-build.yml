@@ -1,0 +1,179 @@
+name: perf-build
+
+# Builds the One Pro perf candidate from the published, hash-pinned rc7 BIN.
+# No device access: the workflow never talks to USB or flashes anything.
+on:
+  push:
+    branches: ['perf/**']
+    tags: ['perf-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RC7_URL: https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.7.0/XREAL-one-pro-Pilot2-RU-0.7.0.bin
+  RC7_SHA: 721e08d0828e116ad18d26168d43a5fc9788ba3ce52e0b34a7c234159b5bde43
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Toolchain
+        run: |
+          # The runner image ships LLVM; use it and skip apt (no network needed).
+          mkdir -p "$HOME/llvm-bin"
+          for v in "" -18 -17 -19; do
+            if command -v "clang$v" >/dev/null && command -v "ld.lld$v" >/dev/null; then
+              ln -sf "$(command -v clang$v)" "$HOME/llvm-bin/clang"
+              ln -sf "$(command -v ld.lld$v)" "$HOME/llvm-bin/ld.lld"
+              echo "Using preinstalled clang$v / ld.lld$v"; break
+            fi
+          done
+          if [ ! -e "$HOME/llvm-bin/ld.lld" ]; then
+            # Fallback: apt from the main archive (azure mirror DNS failed once).
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              printf 'http://archive.ubuntu.com/ubuntu/\nhttp://mirrors.edge.kernel.org/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt
+            fi
+            for i in 1 2 3; do
+              timeout 300 sh -c 'sudo apt-get update -qq && sudo apt-get install -y -qq clang lld' && break
+              echo "apt attempt $i failed, retrying"; sleep 20
+            done
+            ln -sf "$(command -v clang)" "$HOME/llvm-bin/clang"
+            ln -sf "$(command -v ld.lld)" "$HOME/llvm-bin/ld.lld"
+          fi
+          echo "$HOME/llvm-bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/llvm-bin:$PATH"
+          clang --version | head -1
+          ld.lld --version
+          python -m pip install -q -r firmware/test-requirements.txt capstone==5.0.3
+          # Lets perf_build.py run the installer's own package classification.
+          python -m pip install -q hidapi==0.15.0 || echo "hidapi unavailable; installer check will be skipped"
+
+      - name: Fetch pinned rc7 BIN
+        run: |
+          mkdir -p inputs
+          curl -fsSL -o inputs/rc7.bin "$RC7_URL"
+          echo "$RC7_SHA  inputs/rc7.bin" | sha256sum -c -
+
+      - name: Native tests (x86-64)
+        run: |
+          gcc -O2 -shared -fPIC firmware/lut_fast.c -o /tmp/xreal-lut.so
+          python firmware/tests/test_lut.py /tmp/xreal-lut.so --bin inputs/rc7.bin
+          python firmware/tests/test_lut_compact.py /tmp/xreal-lut.so --bin inputs/rc7.bin
+          python firmware/tests/test_lut_tetra.py /tmp/xreal-lut.so --bin inputs/rc7.bin
+          python firmware/tests/test_lut_blocks.py /tmp/xreal-lut.so --bin inputs/rc7.bin
+          python firmware/tests/test_lut_coef.py /tmp/xreal-lut.so --bin inputs/rc7.bin
+          gcc -O2 -pthread firmware/runtime.c firmware/tests/runtime_test.c -o /tmp/xreal-runtime
+          /tmp/xreal-runtime
+          gcc -O2 -shared -fPIC -pthread -Ifirmware firmware/cpu_adapter.c firmware/lut_fast.c \
+            firmware/runtime.c work/3d-lab/real3d_cpu.c firmware/tests/hal_stub.c -o /tmp/xreal-rpc.so
+          python firmware/tests/test_rpc_failures.py /tmp/xreal-rpc.so
+          python firmware/tests/test_real3d_smooth.py /tmp/xreal-rpc.so
+          python firmware/tests/test_real3d_cubic.py /tmp/xreal-rpc.so
+          python firmware/tests/test_real3d_reproject.py /tmp/xreal-rpc.so
+          python firmware/tests/test_real3d_eye.py /tmp/xreal-rpc.so
+          python firmware/tests/test_repeat_reuse.py /tmp/xreal-rpc.so
+
+      - name: Build perf BIN
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/perf-v* ]]; then TAG="perf${GITHUB_REF_NAME#perf-v}"; else TAG="perf-${GITHUB_SHA::7}"; fi
+          python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
+            --output outputs/perf --tag "$TAG"
+          # Same adapter plus the opt-in 60 Hz source for AI HDR/Reading.
+          python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
+            --output outputs/exp --tag "$TAG" --experimental
+          cmp outputs/perf/libxreal_cpu_adapter.so outputs/exp/libxreal_cpu_adapter.so
+          # Movie-first colour variant: HDR60-UI plus the re-graded AI HDR cube.
+          # (A 30 Hz source was tried: the One Pro DP receiver rejects EDID 1920_1080_30.)
+          python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
+            --output outputs/cinema --tag "$TAG" --experimental --keep90 --hdr-strength 70 --hdr-tone 35
+          cmp outputs/perf/libxreal_cpu_adapter.so outputs/cinema/libxreal_cpu_adapter.so
+
+      - name: ARM64 tests on the shipped adapter
+        env:
+          REAL3D_LIB: ${{ github.workspace }}/outputs/perf/libxreal_cpu_adapter.so
+        run: |
+          python - <<'EOF'
+          import io, zipfile
+          from pathlib import Path
+          def files(path):
+              data = Path(path).read_bytes()
+              return zipfile.ZipFile(io.BytesIO(data[64:].translate(bytes(i ^ 0x66 for i in range(256)))))
+          rc7 = files('inputs/rc7.bin')
+          base = files('outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin')
+          Path('inputs/rc7-adapter.so').write_bytes(rc7.read('pilot/bin/libxreal_cpu_adapter.so'))
+          Path('work/3d-lab/vendor-compare').mkdir(parents=True, exist_ok=True)
+          Path('work/3d-lab/vendor-compare/onepro-libnr_depth_manager.so').write_bytes(
+              rc7.read('pilot/bin/libxreal_onepro_mesh.so'))
+          Path('outputs/real3d-dual').mkdir(parents=True, exist_ok=True)
+          Path('outputs/real3d-dual/base-osd.so').write_bytes(base.read('pilot/bin/libnr_osd.so'))
+          EOF
+          cd firmware/tests
+          python test_geometry.py
+          python test_frame_bounds.py
+          python test_lut_arm64.py "$REAL3D_LIB"
+          python test_lut_compact_arm64.py "$REAL3D_LIB" --bin ../../inputs/rc7.bin \
+            --output ../../outputs/perf/aihdr-instructions.json
+          python test_compare_ui.py "$REAL3D_LIB"
+          python test_onepro_bridge.py "$REAL3D_LIB"
+          python compare_warp_work.py ../../inputs/rc7-adapter.so "$REAL3D_LIB" \
+            --output ../../outputs/perf/real3d-instructions.json
+
+      - name: Summary
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          report = json.loads(Path('outputs/perf/build-report.json').read_text())
+          report.update(json.loads(Path('outputs/exp/build-report.json').read_text()))
+          for name, item in report.items():
+              print(f"### {name}\n\nSHA256 `{item['sha256']}` · {item['bytes']} bytes · "
+                    f"{item['readback_files']} readback files\n\nChanged vs rc7: "
+                    + ', '.join(f'`{n}`' for n in item['changed_files']) + f"\n\n{item['installer_check']}\n")
+          aihdr = json.loads(Path('outputs/perf/aihdr-instructions.json').read_text())
+          print('#### AI HDR, ARM64 instructions per pixel (not cycles)\n\n| cube | content | dense | compact | compact16 | blocks | coef | max err | c16 err | coef err |\n|---|---|---|---|---|---|---|---|---|---|')
+          for cube, kinds in aihdr['cubes'].items():
+              for kind, v in kinds.items():
+                  print(f"| {cube.rsplit('/',1)[-1]} | {kind} | {v['dense_instructions_per_pixel']} | "
+                        f"{v['compact_instructions_per_pixel']} | {v['compact16_instructions_per_pixel']} | {v['blocks_instructions_per_pixel']} | {v['coef_instructions_per_pixel']} | {v['max_error_vs_float']} | {v['compact16_max_error_vs_float']} | {v['coef_max_error_vs_float']} |")
+          warp = json.loads(Path('outputs/perf/real3d-instructions.json').read_text())
+          cuts = [c['reduction_percent'] for c in warp['cases']]
+          print(f"\n#### Real3D Pro+ warp vs rc7\n\nOutput byte-identical in {len(cuts)} cases; "
+                f"instruction reduction {min(cuts)}..{max(cuts)} %.")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xreal-one-pro-perf
+          path: |
+            outputs/perf/*.bin
+            outputs/exp/*.bin
+            outputs/cinema/*.bin
+            outputs/cinema/build-report.json
+            outputs/perf/build-report.json
+            outputs/exp/build-report.json
+            outputs/perf/SHA256SUMS.txt
+            outputs/exp/SHA256SUMS.txt
+            outputs/perf/aihdr-instructions.json
+            outputs/perf/real3d-instructions.json
+            outputs/perf/libxreal_cpu_adapter.so
+
+      - name: Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/perf-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat outputs/perf/SHA256SUMS.txt outputs/exp/SHA256SUMS.txt > SHA256SUMS.txt
+          cp outputs/exp/build-report.json build-report-HDR60.json
+          gh release create "$GITHUB_REF_NAME" outputs/perf/*.bin outputs/exp/*.bin SHA256SUMS.txt \
+            outputs/perf/build-report.json build-report-HDR60.json outputs/perf/aihdr-instructions.json \
+            outputs/perf/real3d-instructions.json \
+            --title "One Pro perf candidate $GITHUB_REF_NAME" --prerelease \
+            --notes-file firmware/PERF.md
