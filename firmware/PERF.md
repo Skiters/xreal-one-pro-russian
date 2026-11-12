@@ -138,6 +138,19 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf13
+
+perf12 on the device: tolerant repeat detection worked (up to 78% repeats on
+a film), but the 6 MB input/output copies made each frame 26–45 ms instead of
+~18 on the A53 memory bus. Meanwhile Movie (also our CPU adapter, ~15 ms,
+rc7's 90 Hz source, unpaced) looked smooth to the owner, while AI HDR at a
+60 Hz source paced to an even 30/s looked stalled: film smoothness depends on
+how often a fresh source frame is taken, not on an even cadence.
+
+- AI HDR and Reading keep rc7's 90 Hz source (`--keep90`, variant `-UI90`).
+- AI HDR pacing and repeat reuse disabled (code kept); compact16 only.
+- Real3D unchanged (unpaced since perf11).
+
 ## perf12
 
 perf11 on the device: 0 exact repeats while playing a film, AI HDR paced at

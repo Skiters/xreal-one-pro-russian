@@ -125,7 +125,7 @@ def soften_cube(text, strength, neutral_greys=True, tone=None, skin=0.5):
 SDK_GLOBAL = 'pilot/conf/sdk_global.json'
 
 
-def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None, synth30=False):
+def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None, synth30=False, keep90=False):
     """Opt-in variant (-HDR60-UI), One Pro only:
     1. AI HDR and Reading request 60 Hz instead of 90 Hz from the source,
        because their frames are processed on the CPU.
@@ -146,7 +146,10 @@ def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None, synth30=F
     from package_format import validate_config
     edits = []
     config = files[CONFIG].decode('utf-8')
-    blocks = [('"color_mode" :', '"reading" :', '1920_1080_60'),
+    # keep90 (perf13): leave AI HDR and Reading on rc7's 90 Hz source, like
+    # Movie, which looked smooth on the device; a 60 Hz source paced to an
+    # even 30/s made film look stalled.
+    blocks = [] if keep90 else [('"color_mode" :', '"reading" :', '1920_1080_60'),
               ('"dynamic_range" :', '"ai hdr" :', '1920_1080_30' if cinema else '1920_1080_60')]
     if '"1920_1080_30": "1920_1080_90"' not in config:
         raise ValueError('dp_oled_map no longer maps 30 Hz input to the 90 Hz OLED timing')
@@ -344,7 +347,7 @@ def build(args):
     changed_expected = [ADAPTER, MANIFEST, CHECKSUMS]
     if args.experimental:
         changed, edits = experimental(files, cinema=args.cinema, hdr_strength=args.hdr_strength,
-                                      hdr_tone=args.hdr_tone, synth30=args.synth30)
+                                      hdr_tone=args.hdr_tone, synth30=args.synth30, keep90=args.keep90)
         changed_expected += changed
         manifest['perf']['experimental'] = {
             'edits': edits,
@@ -371,7 +374,7 @@ def build(args):
     packed = bytearray(rc7[:64] + stream.getvalue().translate(XOR))
     packed[4:8] = (len(packed)-8).to_bytes(4, 'little')
     packed[:4] = container_crc(packed).to_bytes(4, 'little')
-    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{("-CINEMA30-UI" if args.cinema else "-HDR60-UI") + (f"-HDR{args.hdr_strength}" if args.hdr_strength != 100 else "") if args.experimental else ""}.bin'
+    name = f'XREAL-one-pro-Pilot2-RU-0.7.0-{args.tag}{("-CINEMA30-UI" if args.cinema else "-UI90" if args.keep90 else "-HDR60-UI") + (f"-HDR{args.hdr_strength}" if args.hdr_strength != 100 else "") if args.experimental else ""}.bin'
     target = out/name
     target.write_bytes(packed)
 
@@ -412,6 +415,8 @@ if __name__ == '__main__':
     p.add_argument('--tag', default='perf1')
     p.add_argument('--hdr-strength', type=int, default=100,
                    help='With --experimental: AI HDR cube strength in percent (blend with identity)')
+    p.add_argument('--keep90', action='store_true',
+                   help='With --experimental: keep rc7 90 Hz source for AI HDR/Reading (no 60 Hz edit)')
     p.add_argument('--synth30', action='store_true',
                    help='With --experimental: add sdk_global.json asking Flinger for 30 fps 2D->3D (experiment)')
     p.add_argument('--hdr-tone', type=int, default=None,

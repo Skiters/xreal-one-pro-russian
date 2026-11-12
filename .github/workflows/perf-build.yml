@@ -89,7 +89,7 @@ jobs:
           # Movie-first colour variant: HDR60-UI plus the re-graded AI HDR cube.
           # (A 30 Hz source was tried: the One Pro DP receiver rejects EDID 1920_1080_30.)
           python firmware/perf_build.py --clang "$(command -v clang)" --rc7 inputs/rc7.bin \
-            --output outputs/cinema --tag "$TAG" --experimental --hdr-strength 70 --hdr-tone 35
+            --output outputs/cinema --tag "$TAG" --experimental --keep90 --hdr-strength 70 --hdr-tone 35
           cmp outputs/perf/libxreal_cpu_adapter.so outputs/cinema/libxreal_cpu_adapter.so
 
       - name: ARM64 tests on the shipped adapter

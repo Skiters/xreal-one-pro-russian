@@ -26,7 +26,11 @@ extern int nanosleep(const struct timespec *,struct timespec *);
  * than PACE_US after the previous one began, locking onto every second
  * source frame: an even 30 frames/s. EMA of the busy time with hysteresis. */
 #define PACE_US 32800L
-#define PACE_ON_US 15800L
+/* perf13: pacing DISABLED (threshold unreachable). On the device even 30/s
+ * made film look stalled: what keeps film motion smooth is how often a fresh
+ * source frame is taken (Movie at a 90 Hz source, ~15 ms, looks smooth), not
+ * an even cadence. AI HDR now uses the 90 Hz source like Movie, unpaced. */
+#define PACE_ON_US 100000000L
 #define PACE_OFF_US 13800L
 static long pace_ema_us, pace_last_start_us;
 static int pacing;
@@ -170,6 +174,10 @@ static int rgb_parallel(const u64 *table,const u32 *small,int kernel,u8 *planes[
  * the cube slope times DD_TOL, ~2-3 levels). The compare stops at the first
  * difference. Copies are kept only while repeats occur (>= 10% of 120). */
 #define DD_TOL 2
+/* perf13: repeat reuse DISABLED. With 78% repeats on a film the 6 MB input
+ * and output copies still cost more than they saved on the A53 memory bus
+ * (26-45 ms per frame instead of ~18). Code kept for reference and tests. */
+#define DD_ENABLE 0
 struct dd_job {u8 *planes[3]; u8 *in[3]; u8 *out[3]; u32 strides[3], w, y0, y1; int mode, differ;};
 static u8 *dd_in[3], *dd_out[3]; static u32 dd_w, dd_h; static int dd_prev_valid, dd_have_copy, dd_keep=1;
 static u32 dd_window, dd_window_repeats, dd_repeats, dd_served, dd_hist[6];
@@ -298,7 +306,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(gap>=0)dd_hist[gap<14000?0:gap<20000?1:gap<30000?2:gap<36000?3:gap<50000?4:5]++;
     }
     int served=0;
-    int dd_ok=!dd_prepare(a->width,a->height);
+    int dd_ok=DD_ENABLE && !dd_prepare(a->width,a->height);
     if(dd_ok) {
         int same=dd_prev_valid && !dd_run(planes,a->strides,a->width,a->height,0);
         if(same){dd_repeats++;dd_window_repeats++;}
