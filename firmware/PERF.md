@@ -138,6 +138,15 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf14
+
+perf13 on the device: AI HDR at the 90 Hz source, unpaced: ~43 frames/s
+(p10 38, p90 49), call gaps all 14–30 ms, convert ~21 ms; the owner found it
+livelier. perf14 only adds a whole-call stage breakdown every 30 frames
+(`CPU perf14 stages_us map= convert= flush= unmap= result= total= gap= idle=`)
+because the convert trace hides map + cache invalidate, unmap and the result
+write (suggested by the external audit, AI-HDR-AUDIT-2026-11-12.md).
+
 ## perf13
 
 perf12 on the device: tolerant repeat detection worked (up to 78% repeats on

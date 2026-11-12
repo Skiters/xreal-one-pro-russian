@@ -293,9 +293,10 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(a->result<a->planes[i]+sizes[i] && a->planes[i]<a->result+64)return -22;
         for(u32 j=0;j<i;j++) if(a->planes[i]<a->planes[j]+sizes[j] && a->planes[j]<a->planes[i]+sizes[i])return -22;
     }
-    long call_start_us=now_us();
+    long call_start_us=now_us(), mapped_us=call_start_us;
+    struct timespec before={0,0},converted={0,0},flushed={0,0};
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
-    struct timespec before,converted,flushed;
+    mapped_us=now_us();
     /* perf10: compact16 only. blocks (v1 39 ms, v2 23.2 ms vs 13.1 ms) lost
      * on the device both times; it stays in lut_fast.c with its tests. */
     if(choice<0)choice=2;
@@ -383,6 +384,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     }
 done:
     for(u32 i=0;i<3;i++)if(planes[i])ar_hal_sys_munmap(planes[i],sizes[i]);
+    long unmapped_us=now_us();
     if(!rc && choice>=0) {
         long busy=now_us()-call_start_us;
         pace_ema_us=pace_ema_us ? pace_ema_us+(busy-pace_ema_us)/16 : busy;
@@ -398,10 +400,27 @@ done:
             if(wait>0){struct timespec t={wait/1000000L,(wait%1000000L)*1000L};nanosleep(&t,(struct timespec *)0);}
         }
     }
+    long gap_us=pace_last_start_us ? call_start_us-pace_last_start_us : 0;
     pace_last_start_us=call_start_us;
     if(!rc)frame_count++;
     if(rc || frame_count==1)record("frame processed",rc);
-    return result(a->result,rc);
+    int status=result(a->result,rc);
+    /* perf14: whole-call breakdown (the convert trace alone hides map +
+     * invalidate, unmap and the result write). gap = call start to previous
+     * call start; idle = gap - previous total, time spent outside the adapter. */
+    static long prev_total_us;
+    long end_us=now_us();
+    if(!rc && frame_count%30==1) {
+        char line[240];
+        long conv=(converted.sec-before.sec)*1000000L+(converted.nsec-before.nsec)/1000;
+        long flush=(flushed.sec-converted.sec)*1000000L+(flushed.nsec-converted.nsec)/1000;
+        int n=snprintf(line,sizeof(line),"CPU perf14 stages_us map=%ld convert=%ld flush=%ld unmap=%ld result=%ld total=%ld gap=%ld idle=%ld frame=%u\n",
+                       mapped_us-call_start_us,conv,flush,unmapped_us-(flushed.sec*1000000L+flushed.nsec/1000),
+                       end_us-unmapped_us,end_us-call_start_us,gap_us,gap_us ? gap_us-prev_total_us : 0,frame_count);
+        if(n>0 && n<(int)sizeof(line)){int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);if(fd>=0){write(fd,line,(u64)n);close(fd);}}
+    }
+    prev_total_us=end_us-call_start_us;
+    return status;
 }
 
 /* Private renamed imports: these do not affect other plugins/system libraries. */
