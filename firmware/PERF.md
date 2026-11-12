@@ -138,6 +138,22 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf15 (Real3D sharpness + joint chroma)
+
+From the external audit (REAL3D-AUDIT-2026-11-12.md). 3D frame rate is
+bounded upstream (~48/s, depth/NPU), so warp time is spent on quality:
+
+- **Luma 4-tap Catmull–Rom** for fractional source positions (Q8 weights per
+  Q5 phase, rows sum to 256), clamped to the two centre samples (no halo on
+  subtitles/hard edges). Integer positions are still copied. Shared-phase
+  cells use NEON (8-byte window, 4 widened taps, int32 accumulate). At a
+  half-pixel shift linear keeps ~71% of a period-4 pattern's contrast,
+  Catmull–Rom ~88% (before the clamp).
+- **U and V warped in one pass** sharing the geometry: byte-identical to two
+  passes, ~25% fewer geometry-cell iterations.
+- `test_real3d_cubic.py`: independent per-pixel oracle for the cubic luma
+  warp and byte equality of the joint chroma pass; NEON equals portable.
+
 ## perf14
 
 perf13 on the device: AI HDR at the 90 Hz source, unpaced: ~43 frames/s

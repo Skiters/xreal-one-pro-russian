@@ -227,6 +227,81 @@ static void sample_cell2(u8 *dst, const u8 *src, u32 frac) {
  * interpolation of the 480x270 map instead of 4-pixel steps along slanted
  * edges. Cells whose neighbours carry the same displacement keep the shared
  * fast path. */
+/* perf15 luma sharpness: 4-tap Catmull-Rom instead of 2-tap linear when the
+ * Q5 source position is fractional (integer positions are still copied).
+ * Q8 weights for the 32 phases, each row sums to 256. Anti-ringing: the
+ * result is clamped to the two centre samples, so subtitles and hard edges
+ * get no halo, while gradients/texture keep more contrast than linear. */
+static const short CR_Q8[32][4] = {
+    {0, 256, 0, 0},
+    {-4, 256, 4, 0},
+    {-7, 253, 10, 0},
+    {-10, 251, 16, -1},
+    {-12, 247, 23, -2},
+    {-14, 242, 31, -3},
+    {-16, 237, 39, -4},
+    {-17, 230, 48, -5},
+    {-18, 222, 58, -6},
+    {-19, 214, 68, -7},
+    {-19, 206, 78, -9},
+    {-19, 196, 89, -10},
+    {-19, 186, 100, -11},
+    {-18, 176, 111, -13},
+    {-18, 166, 122, -14},
+    {-17, 155, 133, -15},
+    {-16, 144, 144, -16},
+    {-15, 133, 155, -17},
+    {-14, 122, 166, -18},
+    {-13, 111, 176, -18},
+    {-11, 100, 186, -19},
+    {-10, 89, 196, -19},
+    {-9, 78, 206, -19},
+    {-7, 68, 214, -19},
+    {-6, 58, 222, -18},
+    {-5, 48, 230, -17},
+    {-4, 39, 237, -16},
+    {-3, 31, 242, -14},
+    {-2, 23, 247, -12},
+    {-1, 16, 251, -10},
+    {0, 10, 253, -7},
+    {0, 4, 256, -4}
+};
+
+static u8 sample_cubic_q5(const u8 *s, int q, u32 width) {
+    if (q <= 0) return s[0];
+    u32 x = (u32)q >> 5, f = (u32)q & 31;
+    if (x >= width - 1) return s[width - 1];
+    if (!f) return s[x];
+    int a = s[x ? x - 1 : 0], b = s[x], c = s[x + 1], d = s[x + 2 < width ? x + 2 : width - 1];
+    int v = (CR_Q8[f][0] * a + CR_Q8[f][1] * b + CR_Q8[f][2] * c + CR_Q8[f][3] * d + 128) >> 8;
+    int lo = b < c ? b : c, hi = b < c ? c : b;
+    return (u8)(v < lo ? lo : v > hi ? hi : v);
+}
+
+/* Four luma pixels sharing one fractional phase (the cell fast path).
+ * Caller guarantees 1 <= sx and sx + 7 <= width. Same arithmetic as
+ * sample_cubic_q5. */
+static void sample_cell4_cubic(u8 *dst, const u8 *s, u32 sx, u32 f) {
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+    uint8x8_t win = vld1_u8(s + sx - 1);                 /* s[sx-1 .. sx+6] */
+    int16x4_t t0 = vreinterpret_s16_u16(vget_low_u16(vmovl_u8(win)));
+    int16x4_t t1 = vreinterpret_s16_u16(vget_low_u16(vmovl_u8(vext_u8(win, win, 1))));
+    int16x4_t t2 = vreinterpret_s16_u16(vget_low_u16(vmovl_u8(vext_u8(win, win, 2))));
+    int16x4_t t3 = vreinterpret_s16_u16(vget_low_u16(vmovl_u8(vext_u8(win, win, 3))));
+    int32x4_t acc = vmull_n_s16(t0, CR_Q8[f][0]);
+    acc = vmlal_n_s16(acc, t1, CR_Q8[f][1]);
+    acc = vmlal_n_s16(acc, t2, CR_Q8[f][2]);
+    acc = vmlal_n_s16(acc, t3, CR_Q8[f][3]);
+    int16x4_t v = vmovn_s32(vshrq_n_s32(vaddq_s32(acc, vdupq_n_s32(128)), 8));
+    v = vmax_s16(v, vmin_s16(t1, t2));
+    v = vmin_s16(v, vmax_s16(t1, t2));
+    uint8x8_t out = vqmovun_s16(vcombine_s16(v, v));
+    vst1_lane_u32((uint32_t *)(void *)dst, vreinterpret_u32_u8(out), 0);
+#else
+    for (u32 k = 0; k < 4; ++k) dst[k] = sample_cubic_q5(s, (int)((sx + k) * 32 + f), sx + 8);
+#endif
+}
+
 #define HFLAT 4U
 /* Four luma pixels with individual Q5 displacements: one 16-byte load and a
  * TBL gather instead of eight byte loads. Same arithmetic as sample_q5.
@@ -259,11 +334,15 @@ static inline int sample_pixels4(u8 *d, const u8 *s, u32 x, const u32 sh[4], u32
 #endif
 }
 
+/* src2/dst2 (optional): a second plane with identical geometry (U with V),
+ * warped in the same pass; only for smooth != 2. cubic: luma 4-tap. */
 static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 width, u32 height, u32 src_stride,
                                  u32 dst_stride, u32 depth_width,
                                  u32 depth_height, u32 begin, u32 end,
-                                 u32 fractional_bits, int smooth) {
+                                 u32 fractional_bits, int smooth,
+                                 const u8 *src2, u8 *dst2, u32 src2_stride, u32 dst2_stride,
+                                 int cubic) {
     if (fractional_bits < 2 || fractional_bits > 4 ||
         !depth_width || !depth_height || !width || !height ||
         !src || !dst || !depth || src_stride < width || dst_stride < width) return -22;
@@ -275,6 +354,8 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
     if (depth_width > 480) return -22;
     u32 den_shift = rows == 4 ? 3 : rows == 2 ? 2 : 0;
     if (smooth && !den_shift) return -22;
+    if (dst2 && (!src2 || smooth == 2 || src2_stride < width || dst2_stride < width)) return -22;
+    cubic = cubic && pixels == 4;
     for (u32 zy = begin; zy < end; ++zy) {
         const u8 *z = depth + (size_t)zy * depth_width;
         const u8 *up = depth + (size_t)(zy ? zy - 1 : zy) * depth_width;
@@ -303,6 +384,8 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
             u32 y = zy * rows + ry;
             const u8 *s = src + (size_t)y * src_stride;
             u8 *d = dst + (size_t)y * dst_stride;
+            const u8 *s2 = dst2 ? src2 + (size_t)y * src2_stride : NULL;
+            u8 *d2 = dst2 ? dst2 + (size_t)y * dst2_stride : NULL;
             for (u32 zx = 0, x = 0; zx < depth_width; ++zx, x += pixels) {
                 if (smooth == 2) {
                     u32 mid = blend[zx];
@@ -326,7 +409,10 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                         }
                         u32 top = mid > left ? mid : left;
                         if (right > top) top = right;
-                        if (pixels == 4 && sample_pixels4(d + x, s, x, sh, width)) {
+                        if (cubic) {
+                            for (u32 k = 0; k < pixels; ++k)
+                                d[x + k] = sample_cubic_q5(s, (int)((x + k) * 32 + sh[k]), width);
+                        } else if (pixels == 4 && sample_pixels4(d + x, s, x, sh, width)) {
                         } else if ((((x + pixels - 1) * 32 + top) >> 5) + 1 < width) {
                             /* Every sample and its right neighbour lie inside the
                              * row: the same arithmetic as sample_q5, unchecked. */
@@ -347,14 +433,28 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                         __builtin_memcpy(d + x, s + sx, 4);
                     else
                         __builtin_memcpy(d + x, s + sx, 2);
+                    if (d2) __builtin_memcpy(d2 + x, s2 + sx, pixels);
+                } else if (cubic) {
+                    if (sx >= 1 && sx + 7 <= width)
+                        sample_cell4_cubic(d + x, s, sx, q & 31);
+                    else
+                        for (u32 k = 0; k < pixels; ++k)
+                            d[x + k] = sample_cubic_q5(s, (int)q + (int)k * 32, width);
                 } else if (sx + pixels < width) {
                     if (pixels == 4)
                         sample_cell4(d + x, s + sx, q & 31);
                     else
                         sample_cell2(d + x, s + sx, q & 31);
+                    if (d2) {
+                        if (pixels == 4) sample_cell4(d2 + x, s2 + sx, q & 31);
+                        else sample_cell2(d2 + x, s2 + sx, q & 31);
+                    }
                 } else {
                     for (u32 k = 0; k < pixels; ++k)
                         d[x + k] = sample_q5(s, (int)q + (int)k * 32, width);
+                    if (d2)
+                        for (u32 k = 0; k < pixels; ++k)
+                            d2[x + k] = sample_q5(s2, (int)q + (int)k * 32, width);
                 }
             }
         }
@@ -367,7 +467,7 @@ static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
                                   u32 dst_stride, u32 depth_width,
                                   u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 0);
+                                 depth_width, depth_height, begin, end, fractional_bits, 0, NULL, NULL, 0, 0, 0);
 }
 
 static int warp_plane_cells_smooth_range(const u8 *src, u8 *dst, const u8 *depth,
@@ -375,7 +475,7 @@ static int warp_plane_cells_smooth_range(const u8 *src, u8 *dst, const u8 *depth
                                          u32 dst_stride, u32 depth_width,
                                          u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 1);
+                                 depth_width, depth_height, begin, end, fractional_bits, 1, NULL, NULL, 0, 0, 0);
 }
 
 static int warp_plane_cells(const u8 *src, u8 *dst, const u8 *depth,
@@ -402,7 +502,26 @@ static int warp_plane_cells_bilinear_range(const u8 *src, u8 *dst, const u8 *dep
                                            u32 dst_stride, u32 depth_width,
                                            u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 2);
+                                 depth_width, depth_height, begin, end, fractional_bits, 2, NULL, NULL, 0, 0, 0);
+}
+
+static int warp_luma_cubic_range(const u8 *src, u8 *dst, const u8 *depth,
+                                 u32 width, u32 height, u32 src_stride,
+                                 u32 dst_stride, u32 depth_width,
+                                 u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 2,
+                                 NULL, NULL, 0, 0, 1);
+}
+
+static int warp_chroma_pair_range(const u8 *u_src, u8 *u_dst, const u8 *v_src, u8 *v_dst,
+                                  const u8 *depth, u32 width, u32 height,
+                                  u32 u_src_stride, u32 u_dst_stride,
+                                  u32 v_src_stride, u32 v_dst_stride, u32 depth_width,
+                                  u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(u_src, u_dst, depth, width, height, u_src_stride, u_dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 1,
+                                 v_src, v_dst, v_src_stride, v_dst_stride, 0);
 }
 
 /* Dynamic scheduling: workers take SEGMENT_ROWS depth rows at a time from a
@@ -417,17 +536,19 @@ static void *segment_worker(void *arg) {
         u32 first = j->begin + chunk * SEGMENT_ROWS;
         if (first >= j->end) break;
         u32 last = first + SEGMENT_ROWS < j->end ? first + SEGMENT_ROWS : j->end;
-        for (u32 channel = 0; channel < 3; ++channel) {
-            /* Bilinear on luma only: chroma is half resolution and a 1-2
-             * pixel chroma step is not visible next to the smooth luma edge. */
-            int rc = (channel ? warp_plane_cells_smooth_range : warp_plane_cells_bilinear_range)(
-                                            j->src[channel], j->dst[channel],
-                                            j->depth, j->width[channel],
-                                            j->height[channel], j->src_stride[channel],
-                                            j->dst_stride[channel], j->depth_width,
-                                            j->depth_height, first, last, j->fractional_bits);
-            if (rc && !j->rc) j->rc = rc;
-        }
+        /* Luma: bilinear displacement + 4-tap Catmull-Rom (perf15). Chroma:
+         * vertical blend, U and V in one pass sharing the geometry (perf15,
+         * byte-identical to two passes). */
+        int rc = warp_luma_cubic_range(j->src[0], j->dst[0], j->depth, j->width[0],
+                                       j->height[0], j->src_stride[0], j->dst_stride[0],
+                                       j->depth_width, j->depth_height, first, last,
+                                       j->fractional_bits);
+        if (rc && !j->rc) j->rc = rc;
+        rc = warp_chroma_pair_range(j->src[1], j->dst[1], j->src[2], j->dst[2], j->depth,
+                                    j->width[1], j->height[1], j->src_stride[1], j->dst_stride[1],
+                                    j->src_stride[2], j->dst_stride[2], j->depth_width,
+                                    j->depth_height, first, last, j->fractional_bits);
+        if (rc && !j->rc) j->rc = rc;
     }
     return NULL;
 }
@@ -767,4 +888,21 @@ int real3d_warp_cells_bilinear_range_for_test(const u8 *src, u8 *dst, const u8 *
     return warp_plane_cells_bilinear_range(src, dst, depth, width, height,
                                            src_stride, dst_stride, depth_width,
                                            depth_height, begin, end, fractional_bits);
+}
+
+int real3d_warp_luma_cubic_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                                          u32 width, u32 height, u32 src_stride,
+                                          u32 dst_stride, u32 depth_width,
+                                          u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_luma_cubic_range(src, dst, depth, width, height, src_stride, dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits);
+}
+
+int real3d_warp_chroma_pair_range_for_test(const u8 *u_src, u8 *u_dst, const u8 *v_src, u8 *v_dst,
+                                           const u8 *depth, u32 width, u32 height, u32 stride,
+                                           u32 depth_width, u32 depth_height, u32 begin, u32 end,
+                                           u32 fractional_bits) {
+    return warp_chroma_pair_range(u_src, u_dst, v_src, v_dst, depth, width, height,
+                                  stride, stride, stride, stride, depth_width, depth_height,
+                                  begin, end, fractional_bits);
 }
