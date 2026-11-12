@@ -688,7 +688,12 @@ static void *segment_worker(void *arg) {
         /* Luma: bilinear displacement + 4-tap Catmull-Rom (perf15). Chroma:
          * vertical blend, U and V in one pass sharing the geometry (perf15,
          * byte-identical to two passes). */
-        int rc = warp_luma_jbu_range(j->src[0], j->dst[0], j->depth, j->width[0],
+        /* perf20: luma back to the perf5/perf11 path (bilinear displacement,
+         * 2-tap sampling). On the device the cubic + edge-aware variants
+         * cost 22-28 ms (36 frames/s) and perf19's hard layer selection
+         * brought back halos and staircase. They stay in this file with
+         * tests (warp_luma_cubic_range / warp_luma_jbu_range), unused. */
+        int rc = warp_plane_cells_bilinear_range(j->src[0], j->dst[0], j->depth, j->width[0],
                                        j->height[0], j->src_stride[0], j->dst_stride[0],
                                        j->depth_width, j->depth_height, first, last,
                                        j->fractional_bits);

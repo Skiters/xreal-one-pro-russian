@@ -138,6 +138,15 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf20 (Real3D rollback)
+
+perf19 on the device: warp 22–28 ms, 3D ~36 frames/s, and the hard
+near/far selection brought back halos and staircase where object and
+background luma are close. Luma returns to the perf5/perf11 path (bilinear
+displacement, 2-tap sampling, ~15 ms, ~48 frames/s, no staircase). The joint
+U/V pass (byte-identical) stays. Cubic and edge-aware code remain with tests,
+unused. For more depth use the menu's strongest depth level.
+
 ## perf19 (Real3D object separation)
 
 The owner found perf16's 3D flatter than the native One Pro mesh. Same depth
