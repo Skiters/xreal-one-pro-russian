@@ -62,7 +62,7 @@ def oracle(src, depth, width, height, stride, dw, dh, bits, begin, end, fill, jb
             if jbu:
                 l, r = max(zx-1, 0), min(zx+1, dw-1)
                 vals = [raw(zy, zx), raw(zy, l), raw(zy, r), raw(other, zx), raw(other, l), raw(other, r)]
-                if max(vals) - min(vals) > 16:
+                if max(vals) - min(vals) > 32:
                     hnum = 2*k + 1 - 4
                     hw, side = abs(hnum), (l if hnum < 0 else r)
                     cells = [(zy, zx, (8-hw)*(8-w)), (zy, side, hw*(8-w)), (other, zx, (8-hw)*w), (other, side, hw*w)]

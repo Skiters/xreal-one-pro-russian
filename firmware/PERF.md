@@ -138,6 +138,17 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf18 (Real3D cost)
+
+perf16 on the device: warp 20–30 ms (was ~15–16), 3D ~37 frames/s (was ~48)
+— our warp became the bottleneck. Relative luma cost on an M2 (1 thread,
+synthetic depth with noise): linear 3.1 ms, +cubic 4.8, +edge-aware 6.0.
+- Per-pixel cubic (cells with differing phases) now uses one 16-byte window,
+  TBL gathers and a 4x4 weight transpose (was scalar): cubic 3.6 ms.
+- Edge-aware depth only at jumps > 1 pixel (was 1/2): object boundaries,
+  not depth noise; edge flags computed once per depth row: 4.25 ms total.
+Outputs unchanged except the threshold; oracle updated and passing.
+
 ## perf17 (menu responsiveness)
 
 From FIRMWARE-AUDIT-2026-11-12.md, re-verified on the rc7 OSD:

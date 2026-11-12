@@ -302,6 +302,46 @@ static void sample_cell4_cubic(u8 *dst, const u8 *s, u32 sx, u32 f) {
 #endif
 }
 
+/* perf18: per-pixel cubic for four luma pixels with individual phases, one
+ * 16-byte window + TBL gathers and a 4x4 weight transpose. Returns 0 when the
+ * window does not fit (caller uses sample_cubic_q5). Same arithmetic. */
+static inline int sample_pixels4_cubic(u8 *d, const u8 *s, u32 x, const u32 sh[4], u32 width) {
+#if defined(__aarch64__) && !defined(XREAL_NO_NEON)
+    u32 i[4], f[4];
+    for (u32 k = 0; k < 4; ++k) { u32 q = (x + k) * 32 + sh[k]; i[k] = q >> 5; f[k] = q & 31; }
+    u32 lo = i[0], hi = i[0];
+    for (u32 k = 1; k < 4; ++k) { if (i[k] < lo) lo = i[k]; if (i[k] > hi) hi = i[k]; }
+    if (lo < 1 || hi - lo > 12 || lo - 1 + 16 > width) return 0;
+    uint8x16_t win = vld1q_u8(s + lo - 1);
+    u64 base = (u64)(i[0] - lo) | (u64)(i[1] - lo) << 8 | (u64)(i[2] - lo) << 16 | (u64)(i[3] - lo) << 24;
+    int16x4_t tap[4];
+    for (u32 t = 0; t < 4; ++t) {
+        uint8x8_t idx = vcreate_u8(base + 0x01010101ULL * t);
+        tap[t] = vreinterpret_s16_u16(vget_low_u16(vmovl_u8(vqtbl1_u8(win, idx))));
+    }
+    /* Rows = pixels, columns = taps; transpose to tap-major weight vectors. */
+    int16x4_t r0 = vld1_s16(CR_Q8[f[0]]), r1 = vld1_s16(CR_Q8[f[1]]);
+    int16x4_t r2 = vld1_s16(CR_Q8[f[2]]), r3 = vld1_s16(CR_Q8[f[3]]);
+    int16x4x2_t a = vtrn_s16(r0, r1), b = vtrn_s16(r2, r3);
+    int32x2x2_t c = vtrn_s32(vreinterpret_s32_s16(a.val[0]), vreinterpret_s32_s16(b.val[0]));
+    int32x2x2_t e = vtrn_s32(vreinterpret_s32_s16(a.val[1]), vreinterpret_s32_s16(b.val[1]));
+    int16x4_t w0 = vreinterpret_s16_s32(c.val[0]), w2 = vreinterpret_s16_s32(c.val[1]);
+    int16x4_t w1 = vreinterpret_s16_s32(e.val[0]), w3 = vreinterpret_s16_s32(e.val[1]);
+    int32x4_t acc = vmull_s16(tap[0], w0);
+    acc = vmlal_s16(acc, tap[1], w1);
+    acc = vmlal_s16(acc, tap[2], w2);
+    acc = vmlal_s16(acc, tap[3], w3);
+    int16x4_t v = vmovn_s32(vshrq_n_s32(vaddq_s32(acc, vdupq_n_s32(128)), 8));
+    v = vmax_s16(v, vmin_s16(tap[1], tap[2]));
+    v = vmin_s16(v, vmax_s16(tap[1], tap[2]));
+    vst1_lane_u32((uint32_t *)(void *)d, vreinterpret_u32_u8(vqmovun_s16(vcombine_s16(v, v))), 0);
+    return 1;
+#else
+    (void)d; (void)s; (void)x; (void)sh; (void)width;
+    return 0;
+#endif
+}
+
 #define HFLAT 4U
 
 /* perf16 edge-aware depth (joint bilateral upsampling, luma only). Where the
@@ -311,7 +351,7 @@ static void sample_cell4_cubic(u8 *dst, const u8 *s, u32 sx, u32 f) {
  * close the pixel's source luma is to each cell's centre luma. The depth
  * boundary then follows the object contour instead of a smooth ramp across
  * foreground and background. Elsewhere the perf2/perf5 smoothing is kept. */
-#define JBU_EDGE 16U
+#define JBU_EDGE 32U   /* perf18: 1 pixel (was 1/2): object boundaries, not depth noise */
 static const unsigned short JBU_RANGE_Q8[256] = {256, 254, 249, 240, 229, 215, 199, 182, 164, 146, 128, 110, 94, 79, 66, 54, 43, 34, 27, 21, 16, 12, 9, 6, 5, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 /* Four luma pixels with individual Q5 displacements: one 16-byte load and a
  * TBL gather instead of eight byte loads. Same arithmetic as sample_q5.
@@ -372,8 +412,42 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
         const u8 *up = depth + (size_t)(zy ? zy - 1 : zy) * depth_width;
         const u8 *down = depth + (size_t)(zy + 1 < depth_height ? zy + 1 : zy) * depth_width;
         u16 source_x[480], here[480], above[480], below[480], blend[480];
-        u8 cen_cur[480], cen_up[480], cen_dn[480];
+        u8 cen_cur[480], cen_up[480], cen_dn[480], edge_up[480], edge_dn[480];
+        u32 any_edge = 0;
         if (jbu) {
+            /* perf18: edge flags once per depth row (for the upper and lower
+             * output-row halves) instead of per cell per output row. Same
+             * test as before: max-min of here/left/right in this row and in
+             * the other row > JBU_EDGE. */
+            const u8 *zu = depth + (size_t)(zy ? zy - 1 : zy) * depth_width;
+            const u8 *zd = depth + (size_t)(zy + 1 < depth_height ? zy + 1 : zy) * depth_width;
+            for (u32 zx = 0; zx < depth_width; ++zx) {
+                u32 l = zx ? zx - 1 : zx, r = zx + 1 < depth_width ? zx + 1 : zx;
+                u32 h0 = (u32)depth_shift(z[zx], width, depth_width, fractional_bits);
+                u32 h1 = (u32)depth_shift(z[l], width, depth_width, fractional_bits);
+                u32 h2 = (u32)depth_shift(z[r], width, depth_width, fractional_bits);
+                u32 lo = h0 < h1 ? h0 : h1, hi = h0 < h1 ? h1 : h0;
+                if (h2 < lo) lo = h2;
+                if (h2 > hi) hi = h2;
+                const u8 *o2[2] = { zu, zd };
+                u8 *flag[2] = { edge_up, edge_dn };
+                for (u32 t = 0; t < 2; ++t) {
+                    u32 a0 = (u32)depth_shift(o2[t][zx], width, depth_width, fractional_bits);
+                    u32 a1 = (u32)depth_shift(o2[t][l], width, depth_width, fractional_bits);
+                    u32 a2 = (u32)depth_shift(o2[t][r], width, depth_width, fractional_bits);
+                    u32 l2 = lo, h3 = hi;
+                    if (a0 < l2) l2 = a0;
+                    if (a0 > h3) h3 = a0;
+                    if (a1 < l2) l2 = a1;
+                    if (a1 > h3) h3 = a1;
+                    if (a2 < l2) l2 = a2;
+                    if (a2 > h3) h3 = a2;
+                    flag[t][zx] = h3 - l2 > JBU_EDGE;
+                    any_edge |= flag[t][zx];
+                }
+            }
+        }
+        if (jbu && any_edge) {
             /* Centre luma of each cell: mean of its 2x2 centre pixels. */
             u32 rz[3] = { zy ? zy - 1 : zy, zy, zy + 1 < depth_height ? zy + 1 : zy };
             u8 *cens[3] = { cen_up, cen_cur, cen_dn };
@@ -412,15 +486,13 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
             const u8 *s2 = dst2 ? src2 + (size_t)y * src2_stride : NULL;
             u8 *d2 = dst2 ? dst2 + (size_t)y * dst2_stride : NULL;
             for (u32 zx = 0, x = 0; zx < depth_width; ++zx, x += pixels) {
-                if (jbu) {
+                if (jbu && any_edge && (2 * ry + 1 < rows ? edge_up : edge_dn)[zx]) {
                     u32 l = zx ? zx - 1 : zx, r = zx + 1 < depth_width ? zx + 1 : zx;
                     int num = 2 * (int)ry + 1 - (int)rows;
                     const u16 *oth = num < 0 ? above : below;
                     const u8 *ocen = num < 0 ? cen_up : cen_dn;
                     u32 vw = (u32)(num < 0 ? -num : num);
-                    u32 lo = here[zx], hi = here[zx], vals[5] = { here[l], here[r], oth[zx], oth[l], oth[r] };
-                    for (u32 i = 0; i < 5; ++i) { if (vals[i] < lo) lo = vals[i]; if (vals[i] > hi) hi = vals[i]; }
-                    if (hi - lo > JBU_EDGE) {
+                    {
                         for (u32 k = 0; k < 4; ++k) {
                             int hnum = 2 * (int)k + 1 - 4;
                             u32 hw = (u32)(hnum < 0 ? -hnum : hnum), side = hnum < 0 ? l : r;
@@ -463,8 +535,9 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                         u32 top = mid > left ? mid : left;
                         if (right > top) top = right;
                         if (cubic) {
-                            for (u32 k = 0; k < pixels; ++k)
-                                d[x + k] = sample_cubic_q5(s, (int)((x + k) * 32 + sh[k]), width);
+                            if (!sample_pixels4_cubic(d + x, s, x, sh, width))
+                                for (u32 k = 0; k < pixels; ++k)
+                                    d[x + k] = sample_cubic_q5(s, (int)((x + k) * 32 + sh[k]), width);
                         } else if (pixels == 4 && sample_pixels4(d + x, s, x, sh, width)) {
                         } else if ((((x + pixels - 1) * 32 + top) >> 5) + 1 < width) {
                             /* Every sample and its right neighbour lie inside the
