@@ -78,6 +78,7 @@ jobs:
           python firmware/tests/test_real3d_smooth.py /tmp/xreal-rpc.so
           python firmware/tests/test_real3d_cubic.py /tmp/xreal-rpc.so
           python firmware/tests/test_real3d_reproject.py /tmp/xreal-rpc.so
+          python firmware/tests/test_real3d_eye.py /tmp/xreal-rpc.so
           python firmware/tests/test_repeat_reuse.py /tmp/xreal-rpc.so
 
       - name: Build perf BIN

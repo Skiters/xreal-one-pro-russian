@@ -645,9 +645,85 @@ static int warp_plane_cells(const u8 *src, u8 *dst, const u8 *depth,
                                   0, depth_height, fractional_bits);
 }
 
+/* perf25: symmetric two-eye DIBR. The native One Pro mesh writes BOTH eyes
+ * (src and dst), each shifted by half the disparity; our Pro+ path warped only
+ * one eye by the full disparity, so to stay clean we had to keep it shallow.
+ * Here each eye is warped independently from a clean copy of the source, in
+ * OPPOSITE directions (dir = +1 / -1), so the total disparity is the sum of two
+ * half-sized per-eye shifts: more volume at the same per-eye edge cost. Keeps
+ * perf24's anti-staircase smoothing; sample_q5 clamps both ends, so a leftward
+ * (dir=-1) shift past the left edge is safe. Not the hot NEON path (spike). */
+static int warp_eye_range(const u8 *src, u8 *dst, const u8 *depth,
+                          u32 width, u32 height, u32 src_stride, u32 dst_stride,
+                          u32 depth_width, u32 depth_height, u32 begin, u32 end,
+                          u32 fractional_bits, int dir) {
+    if (fractional_bits < 2 || fractional_bits > 4 || !depth_width || !depth_height ||
+        !width || !height || !src || !dst || !depth ||
+        src_stride < width || dst_stride < width) return -22;
+    u32 pixels = width / depth_width, rows = height / depth_height;
+    if ((pixels != 2 && pixels != 4) || !rows || width % depth_width ||
+        height % depth_height || begin > end || end > depth_height) return -22;
+    u32 den_shift = rows == 4 ? 3 : rows == 2 ? 2 : 0;
+    if (!den_shift) return -22;
+    for (u32 zy = begin; zy < end; ++zy) {
+        const u8 *z = depth + (size_t)zy * depth_width;
+        const u8 *up = depth + (size_t)(zy ? zy - 1 : zy) * depth_width;
+        const u8 *down = depth + (size_t)(zy + 1 < depth_height ? zy + 1 : zy) * depth_width;
+        u16 here[480], above[480], below[480], blend[480];
+        for (u32 zx = 0; zx < depth_width; ++zx) {
+            here[zx] = (u16)depth_shift(z[zx], width, depth_width, fractional_bits);
+            above[zx] = (u16)depth_shift(up[zx], width, depth_width, fractional_bits);
+            below[zx] = (u16)depth_shift(down[zx], width, depth_width, fractional_bits);
+        }
+        for (u32 ry = 0; ry < rows; ++ry) {
+            int num = 2 * (int)ry + 1 - (int)rows;
+            const u16 *other = num < 0 ? above : below;
+            u32 vw = (u32)(num < 0 ? -num : num), den = 2 * rows;
+            for (u32 zx = 0; zx < depth_width; ++zx)
+                blend[zx] = (u16)((here[zx] * (den - vw) + other[zx] * vw + rows) >> den_shift);
+            u32 y = zy * rows + ry;
+            const u8 *s = src + (size_t)y * src_stride;
+            u8 *d = dst + (size_t)y * dst_stride;
+            for (u32 zx = 0, x = 0; zx < depth_width; ++zx, x += pixels) {
+                u32 mid = blend[zx];
+                u32 left = blend[zx ? zx - 1 : zx];
+                u32 right = blend[zx + 1 < depth_width ? zx + 1 : zx];
+                u32 dl = left > mid ? left - mid : mid - left;
+                u32 dr = right > mid ? right - mid : mid - right;
+                u32 sh[4];
+                if (dl > HFLAT || dr > HFLAT) {
+                    if (pixels == 4) {
+                        sh[0] = (5 * mid + 3 * left + 4) >> 3;
+                        sh[1] = (7 * mid + left + 4) >> 3;
+                        sh[2] = (7 * mid + right + 4) >> 3;
+                        sh[3] = (5 * mid + 3 * right + 4) >> 3;
+                    } else {
+                        sh[0] = (3 * mid + left + 2) >> 2;
+                        sh[1] = (3 * mid + right + 2) >> 2;
+                    }
+                } else {
+                    for (u32 k = 0; k < pixels; ++k) sh[k] = mid;
+                }
+                for (u32 k = 0; k < pixels; ++k)
+                    d[x + k] = sample_q5(s, (int)((x + k) * 32) + dir * (int)sh[k], width);
+            }
+        }
+    }
+    return 0;
+}
+
+int real3d_warp_eye_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                                   u32 width, u32 height, u32 src_stride, u32 dst_stride,
+                                   u32 depth_width, u32 depth_height, u32 begin, u32 end,
+                                   u32 fractional_bits, int dir) {
+    return warp_eye_range(src, dst, depth, width, height, src_stride, dst_stride,
+                          depth_width, depth_height, begin, end, fractional_bits, dir);
+}
+
 struct segment_job {
     const u8 *src[3], *depth;
     u8 *dst[3];
+    u8 *eye2[3];            /* perf25: second eye output (the mapped source planes); NULL = single eye */
     u32 width[3], height[3], src_stride[3], dst_stride[3];
     u32 depth_width, depth_height, fractional_bits;
     u32 begin, end;
@@ -715,6 +791,27 @@ static int warp_chroma_pair_clean_range(const u8 *u_src, u8 *u_dst, const u8 *v_
  * shared counter, so a core busy with Pilot's own threads does not hold up
  * the frame. [begin, end) bounds the depth rows this job set covers. */
 #define SEGMENT_ROWS 6
+static void *symmetric_worker(void *arg) {
+    struct segment_job *j = arg;
+    j->rc = 0;
+    for (;;) {
+        u32 chunk = __atomic_fetch_add(j->next, 1, __ATOMIC_RELAXED);
+        u32 first = j->begin + chunk * SEGMENT_ROWS;
+        if (first >= j->end) break;
+        u32 last = first + SEGMENT_ROWS < j->end ? first + SEGMENT_ROWS : j->end;
+        for (u32 c = 0; c < 3; ++c) {
+            int rc = warp_eye_range(j->src[c], j->dst[c], j->depth, j->width[c], j->height[c],
+                                    j->src_stride[c], j->dst_stride[c], j->depth_width,
+                                    j->depth_height, first, last, j->fractional_bits, +1);
+            if (!rc) rc = warp_eye_range(j->src[c], j->eye2[c], j->depth, j->width[c], j->height[c],
+                                    j->src_stride[c], j->src_stride[c], j->depth_width,
+                                    j->depth_height, first, last, j->fractional_bits, -1);
+            if (rc && !j->rc) j->rc = rc;
+        }
+    }
+    return NULL;
+}
+
 static void *segment_worker(void *arg) {
     struct segment_job *j = arg;
     j->rc = 0;
@@ -819,6 +916,7 @@ int real3d_validate_frame_for_test(const struct real3d_frame *f) {
  *    so no staircase returns. */
 #define REAL3D_GAIN_Q8 256U   /* perf24: x1.0 — gain reintroduced bleed; depth via native "Real3D One Pro" row */
 static u8 depth_pre[480 * 270];
+static u8 eye_scratch[3500000];  /* perf25: clean copy of one source frame (3 planes) for the two-eye warp */
 static void depth_prepass(const u8 *z, u8 *out, u32 dw, u32 dh) {
     for (u32 y = 0; y < dh; ++y) {
         const u8 *row = z + (size_t)y * dw;
@@ -844,6 +942,7 @@ static int process_frame(const struct real3d_frame *f) {
     if (!initialized || validate_frame(f)) return -22;
     int side_by_side = 0;
     int chroma_half = 1;
+    int symmetric = 0;   /* perf25: wrote both eyes (src and dst) */
     u32 depth_height = (f->height + 3) / 4;
     u32 depth_size = f->depth_width * depth_height;
     if (!valid(f->depth, depth_size) || !valid(f->result, 64)) return -22;
@@ -920,6 +1019,18 @@ static int process_frame(const struct real3d_frame *f) {
             depth_prepass(z, depth_pre, f->depth_width, depth_height);
             zp = depth_pre;
         }
+        /* perf25: if a clean copy of the source fits, warp BOTH eyes from it. */
+        u8 *scratch[3] = {0, 0, 0};
+        u64 scratch_off = 0;
+        for (u32 c = 0; c < 3; ++c) {
+            scratch[c] = eye_scratch + scratch_off;
+            scratch_off += src_sizes[c];
+        }
+        if (scratch_off <= sizeof(eye_scratch)) {
+            for (u32 c = 0; c < 3; ++c)
+                __builtin_memcpy(scratch[c], source[c], src_sizes[c]);
+            symmetric = 1;
+        }
         for (u32 i = 0; i < 4; ++i) {
             jobs[i] = (struct segment_job){
                 .depth = zp, .depth_width = f->depth_width,
@@ -927,15 +1038,16 @@ static int process_frame(const struct real3d_frame *f) {
                 .begin = 0, .end = depth_height, .next = &next_chunk, .rc = 0,
             };
             for (u32 channel = 0; channel < 3; ++channel) {
-                jobs[i].src[channel] = source[channel];
+                jobs[i].src[channel] = symmetric ? scratch[channel] : source[channel];
                 jobs[i].dst[channel] = destination[channel];
+                jobs[i].eye2[channel] = symmetric ? source[channel] : (u8 *)0;
                 jobs[i].width[channel] = widths[channel];
                 jobs[i].height[channel] = heights[channel];
                 jobs[i].src_stride[channel] = src_strides[channel];
                 jobs[i].dst_stride[channel] = dst_strides[channel];
             }
         }
-        xreal_parallel_run(segment_worker, jobs, sizeof(jobs[0]), 4);
+        xreal_parallel_run(symmetric ? symmetric_worker : segment_worker, jobs, sizeof(jobs[0]), 4);
         for (u32 i = 0; i < 4; ++i)
             if (jobs[i].rc) rc = jobs[i].rc;
     } else for (u32 channel = 0; channel < 3; ++channel) {
@@ -964,6 +1076,11 @@ static int process_frame(const struct real3d_frame *f) {
             break;
         }
 #endif
+    if (!rc && symmetric) for (u32 channel = 0; channel < 3; ++channel)
+        if (ar_hal_sys_mmz_flush_cache_pa(f->src[channel], src_sizes[channel])) {
+            rc = -5;
+            break;
+        }
     if (!rc) for (u32 channel = 0; channel < 3; ++channel)
         if (ar_hal_sys_mmz_flush_cache_pa(f->dst[channel], dst_sizes[channel])) {
             rc = -5;
