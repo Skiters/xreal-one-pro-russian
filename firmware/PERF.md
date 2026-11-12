@@ -138,6 +138,16 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf17 (menu responsiveness)
+
+From FIRMWARE-AUDIT-2026-11-12.md, re-verified on the rc7 OSD:
+- `osd.display_buffer_render_interval_ms` 1 -> 0: the OSD flush callback
+  calls usleep(value*1000) after every draw band, and a 960x540 screen is 10
+  bands (`display_buffer_block_number`), so a full redraw slept >= 10 ms —
+  why ui_fast's 16 ms refresh/animation timers changed nothing visibly.
+- LVGL input read timer 30 -> 16 ms at 0x27dd40 (lv_indev_drv_register) and
+  0x27de18 (lv_indev_drv_update), exact-instruction checked like ui_fast.
+
 ## perf16 (Real3D edge-aware depth)
 
 Where the 480x270 displacement jumps by more than 1/2 pixel around a cell,

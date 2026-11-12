@@ -195,9 +195,31 @@ def experimental(files, cinema=False, hdr_strength=100, hdr_tone=None, synth30=F
     removed = sorted(n for n in before - set(files) if not n.endswith('/'))  # files, not directory entries
     edits.append('ui_fast (upstream): OSD timers 30 -> 16 ms, OSD logs off, '
                  f'boot_wait_time1 0.25 s, removed {len(removed)} ASUS files')
-    validate_config(files[CONFIG], CONFIG)
     if 'refresh_timer_ms' not in ui or ui['refresh_timer_ms'] != 16:
         raise ValueError('Unexpected ui_fast result')
+    # perf17 menu responsiveness (FIRMWARE-AUDIT-2026-11-12.md, verified on rc7):
+    # 1. The OSD flush callback sleeps display_buffer_render_interval_ms after
+    #    EVERY draw band (10 bands per 960x540 screen): >= 10 ms of sleep per
+    #    full menu redraw, which is why ui_fast's 16 ms timers changed nothing.
+    cfg = json.loads(files[CONFIG].decode('utf-8'))
+    if cfg['osd'].get('display_buffer_render_interval_ms') != 1:
+        raise ValueError('Unexpected display_buffer_render_interval_ms')
+    cfg['osd']['display_buffer_render_interval_ms'] = 0
+    files[CONFIG] = (json.dumps(cfg, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode()
+    edits.append(f'{CONFIG}: osd.display_buffer_render_interval_ms 1 -> 0')
+    # 2. LVGL input read timer: lv_indev_drv_register / lv_indev_drv_update
+    #    create it with 30 ms (ui_fast changed only refresh/animation).
+    import struct
+    from ui_fast import offset as elf_offset
+    osd = bytearray(files['pilot/bin/libnr_osd.so'])
+    for va in (0x27dd40, 0x27de18):
+        at = elf_offset(bytes(osd), va)
+        if struct.unpack_from('<I', osd, at)[0] != 0x528003c1:       # mov w1, #30
+            raise ValueError(f'Unexpected instruction at input timer {va:#x}')
+        struct.pack_into('<I', osd, at, 0x52800201)                    # mov w1, #16
+    files['pilot/bin/libnr_osd.so'] = bytes(osd)
+    edits.append('pilot/bin/libnr_osd.so: input read timer 30 -> 16 ms (0x27dd40, 0x27de18)')
+    validate_config(files[CONFIG], CONFIG)
     return [CONFIG, 'pilot/bin/libnr_osd.so'] + changed_extra + removed, edits
 
 
