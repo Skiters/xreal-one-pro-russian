@@ -791,7 +791,7 @@ static int warp_chroma_pair_clean_range(const u8 *u_src, u8 *u_dst, const u8 *v_
  * shared counter, so a core busy with Pilot's own threads does not hold up
  * the frame. [begin, end) bounds the depth rows this job set covers. */
 #define SEGMENT_ROWS 6
-static void *symmetric_worker(void *arg) {
+__attribute__((unused)) static void *symmetric_worker(void *arg) {
     struct segment_job *j = arg;
     j->rc = 0;
     for (;;) {
@@ -942,7 +942,8 @@ static int process_frame(const struct real3d_frame *f) {
     if (!initialized || validate_frame(f)) return -22;
     int side_by_side = 0;
     int chroma_half = 1;
-    int symmetric = 0;   /* perf25: wrote both eyes (src and dst) */
+    int symmetric = 0;   /* perf26: symmetric two-eye disabled (no gain, 3x cost) */
+    (void)symmetric; (void)eye_scratch;
     u32 depth_height = (f->height + 3) / 4;
     u32 depth_size = f->depth_width * depth_height;
     if (!valid(f->depth, depth_size) || !valid(f->result, 64)) return -22;
@@ -1019,18 +1020,10 @@ static int process_frame(const struct real3d_frame *f) {
             depth_prepass(z, depth_pre, f->depth_width, depth_height);
             zp = depth_pre;
         }
-        /* perf25: if a clean copy of the source fits, warp BOTH eyes from it. */
-        u8 *scratch[3] = {0, 0, 0};
-        u64 scratch_off = 0;
-        for (u32 c = 0; c < 3; ++c) {
-            scratch[c] = eye_scratch + scratch_off;
-            scratch_off += src_sizes[c];
-        }
-        if (scratch_off <= sizeof(eye_scratch)) {
-            for (u32 c = 0; c < 3; ++c)
-                __builtin_memcpy(scratch[c], source[c], src_sizes[c]);
-            symmetric = 1;
-        }
+        /* perf26: live path is perf24's single-eye bilinear. The perf25
+         * symmetric two-eye warp (warp_eye_range / symmetric_worker, kept with
+         * its test) gave NO added depth and 3x the cost on device: Pilot does
+         * not display our src buffer as the second eye. Do not re-enable. */
         for (u32 i = 0; i < 4; ++i) {
             jobs[i] = (struct segment_job){
                 .depth = zp, .depth_width = f->depth_width,
@@ -1038,16 +1031,16 @@ static int process_frame(const struct real3d_frame *f) {
                 .begin = 0, .end = depth_height, .next = &next_chunk, .rc = 0,
             };
             for (u32 channel = 0; channel < 3; ++channel) {
-                jobs[i].src[channel] = symmetric ? scratch[channel] : source[channel];
+                jobs[i].src[channel] = source[channel];
                 jobs[i].dst[channel] = destination[channel];
-                jobs[i].eye2[channel] = symmetric ? source[channel] : (u8 *)0;
+                jobs[i].eye2[channel] = (u8 *)0;
                 jobs[i].width[channel] = widths[channel];
                 jobs[i].height[channel] = heights[channel];
                 jobs[i].src_stride[channel] = src_strides[channel];
                 jobs[i].dst_stride[channel] = dst_strides[channel];
             }
         }
-        xreal_parallel_run(symmetric ? symmetric_worker : segment_worker, jobs, sizeof(jobs[0]), 4);
+        xreal_parallel_run(segment_worker, jobs, sizeof(jobs[0]), 4);
         for (u32 i = 0; i < 4; ++i)
             if (jobs[i].rc) rc = jobs[i].rc;
     } else for (u32 channel = 0; channel < 3; ++channel) {
