@@ -105,7 +105,7 @@ def main(path):
         z = bytes(rng.randrange(256) for _ in range(dw*dh))
         out = C.create_string_buffer(dw*dh)
         assert pre(z, out, dw, dh) == 0
-        exp = bytes(min(255, (max(z[y*dw+max(x-1, 0)], z[y*dw+x], z[y*dw+min(x+1, dw-1)])*333 + 128) >> 8)
+        exp = bytes(min(255, (z[y*dw+x]*384 + 128) >> 8)
                     for y in range(dh) for x in range(dw))
         assert out.raw == exp, ('prepass', dw, dh)
     print(f'Real3D smoothing oracle passed: {cases} cases (vertical and bilinear)')

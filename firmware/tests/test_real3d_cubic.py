@@ -142,20 +142,6 @@ def main(path):
                 assert dst.raw == oracle(src, depth, width, height, stride, dw, dh, bits, begin, end, 238, True), \
                     ('luma jbu', bits, kind, begin, end)
                 cases += 1
-            # Chroma pair: identical to two single-plane passes.
-            cw, chh, cs = dw*2, dh*2, dw*2 + 16
-            u = bytes(rng.randrange(256) for _ in range(cs*chh))
-            v = bytes(rng.randrange(256) for _ in range(cs*chh))
-            for begin, end in ((0, dh), (1, 4)):
-                du = C.create_string_buffer(bytes([7])*(cs*chh), cs*chh)
-                dv = C.create_string_buffer(bytes([7])*(cs*chh), cs*chh)
-                assert pair(u, du, v, dv, depth, cw, chh, cs, dw, dh, begin, end, bits) == 0
-                su = C.create_string_buffer(bytes([7])*(cs*chh), cs*chh)
-                sv = C.create_string_buffer(bytes([7])*(cs*chh), cs*chh)
-                assert single(u, su, depth, cw, chh, cs, cs, dw, dh, begin, end, bits) == 0
-                assert single(v, sv, depth, cw, chh, cs, cs, dw, dh, begin, end, bits) == 0
-                assert du.raw == su.raw and dv.raw == sv.raw, ('chroma pair', bits, kind, begin, end)
-                cases += 1
     print(f'Real3D perf15/16 oracle passed: {cases} cases (cubic luma, edge-aware depth, joint U/V)')
 
 

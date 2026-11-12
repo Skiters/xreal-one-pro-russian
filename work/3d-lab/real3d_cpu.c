@@ -392,7 +392,7 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 depth_height, u32 begin, u32 end,
                                  u32 fractional_bits, int smooth,
                                  const u8 *src2, u8 *dst2, u32 src2_stride, u32 dst2_stride,
-                                 int cubic, int jbu) {
+                                 int cubic, int jbu, int reproject) {
     if (fractional_bits < 2 || fractional_bits > 4 ||
         !depth_width || !depth_height || !width || !height ||
         !src || !dst || !depth || src_stride < width || dst_stride < width) return -22;
@@ -477,6 +477,24 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                 u32 w = (u32)(num < 0 ? -num : num), den = 2 * rows;
                 for (u32 zx = 0; zx < depth_width; ++zx) {
                     blend[zx] = (u16)((here[zx] * (den - w) + other[zx] * w + rows) >> den_shift);
+                    source_x[zx] = (u16)(zx * pixels * 32 + blend[zx]);
+                }
+            }
+            if (reproject && smooth) {
+                /* perf23: the depth map is in source coordinates, but this row
+                 * is built in output coordinates (dst[x] = src[x + d]). Read the
+                 * displacement where the pixel actually comes from: one fixed-
+                 * point step d = D(x + D(x)), per cell. Without it, output pixels
+                 * next to a near object take the background's displacement and
+                 * repeat the object's edge (halo that grows with depth). */
+                u16 moved[480];
+                u32 half = 16 * pixels, unit = 32 * pixels;
+                for (u32 zx = 0; zx < depth_width; ++zx) {
+                    u32 to = zx + (blend[zx] + half) / unit;
+                    moved[zx] = blend[to < depth_width ? to : depth_width - 1];
+                }
+                for (u32 zx = 0; zx < depth_width; ++zx) {
+                    blend[zx] = moved[zx];
                     source_x[zx] = (u16)(zx * pixels * 32 + blend[zx]);
                 }
             }
@@ -607,7 +625,7 @@ static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
                                   u32 dst_stride, u32 depth_width,
                                   u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 0, NULL, NULL, 0, 0, 0, 0);
+                                 depth_width, depth_height, begin, end, fractional_bits, 0, NULL, NULL, 0, 0, 0, 0, 0);
 }
 
 static int warp_plane_cells_smooth_range(const u8 *src, u8 *dst, const u8 *depth,
@@ -615,7 +633,7 @@ static int warp_plane_cells_smooth_range(const u8 *src, u8 *dst, const u8 *depth
                                          u32 dst_stride, u32 depth_width,
                                          u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 1, NULL, NULL, 0, 0, 0, 0);
+                                 depth_width, depth_height, begin, end, fractional_bits, 1, NULL, NULL, 0, 0, 0, 0, 0);
 }
 
 static int warp_plane_cells(const u8 *src, u8 *dst, const u8 *depth,
@@ -642,7 +660,7 @@ static int warp_plane_cells_bilinear_range(const u8 *src, u8 *dst, const u8 *dep
                                            u32 dst_stride, u32 depth_width,
                                            u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 2, NULL, NULL, 0, 0, 0, 0);
+                                 depth_width, depth_height, begin, end, fractional_bits, 2, NULL, NULL, 0, 0, 0, 0, 0);
 }
 
 static int warp_luma_cubic_range(const u8 *src, u8 *dst, const u8 *depth,
@@ -651,7 +669,7 @@ static int warp_luma_cubic_range(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
                                  depth_width, depth_height, begin, end, fractional_bits, 2,
-                                 NULL, NULL, 0, 0, 1, 0);
+                                 NULL, NULL, 0, 0, 1, 0, 0);
 }
 
 static int warp_luma_jbu_range(const u8 *src, u8 *dst, const u8 *depth,
@@ -660,7 +678,16 @@ static int warp_luma_jbu_range(const u8 *src, u8 *dst, const u8 *depth,
                                u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
                                  depth_width, depth_height, begin, end, fractional_bits, 2,
-                                 NULL, NULL, 0, 0, 1, 1);
+                                 NULL, NULL, 0, 0, 1, 1, 0);
+}
+
+static int warp_luma_reproject_range(const u8 *src, u8 *dst, const u8 *depth,
+                                     u32 width, u32 height, u32 src_stride,
+                                     u32 dst_stride, u32 depth_width,
+                                     u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 2,
+                                 NULL, NULL, 0, 0, 0, 0, 1);
 }
 
 static int warp_chroma_pair_range(const u8 *u_src, u8 *u_dst, const u8 *v_src, u8 *v_dst,
@@ -670,7 +697,7 @@ static int warp_chroma_pair_range(const u8 *u_src, u8 *u_dst, const u8 *v_src, u
                                   u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(u_src, u_dst, depth, width, height, u_src_stride, u_dst_stride,
                                  depth_width, depth_height, begin, end, fractional_bits, 1,
-                                 v_src, v_dst, v_src_stride, v_dst_stride, 0, 0);
+                                 v_src, v_dst, v_src_stride, v_dst_stride, 0, 0, 1);
 }
 
 /* Dynamic scheduling: workers take SEGMENT_ROWS depth rows at a time from a
@@ -693,7 +720,7 @@ static void *segment_worker(void *arg) {
          * cost 22-28 ms (36 frames/s) and perf19's hard layer selection
          * brought back halos and staircase. They stay in this file with
          * tests (warp_luma_cubic_range / warp_luma_jbu_range), unused. */
-        int rc = warp_plane_cells_bilinear_range(j->src[0], j->dst[0], j->depth, j->width[0],
+        int rc = warp_luma_reproject_range(j->src[0], j->dst[0], j->depth, j->width[0],
                                        j->height[0], j->src_stride[0], j->dst_stride[0],
                                        j->depth_width, j->depth_height, first, last,
                                        j->fractional_bits);
@@ -776,17 +803,16 @@ int real3d_validate_frame_for_test(const struct real3d_frame *f) {
  * 2. Gain: displacement x REAL3D_GAIN_Q8/256 (1.3), clamped to 255, for more
  *    depth than the menu's strongest level. Interior smoothing is unchanged,
  *    so no staircase returns. */
-#define REAL3D_GAIN_Q8 333U
+#define REAL3D_GAIN_Q8 384U   /* perf23: x1.5 (x1.3 was barely noticeable) */
 static u8 depth_pre[480 * 270];
 static void depth_prepass(const u8 *z, u8 *out, u32 dw, u32 dh) {
     for (u32 y = 0; y < dh; ++y) {
         const u8 *row = z + (size_t)y * dw;
         u8 *o = out + (size_t)y * dw;
         for (u32 x = 0; x < dw; ++x) {
-            u32 m = row[x];
-            if (x && row[x - 1] > m) m = row[x - 1];
-            if (x + 1 < dw && row[x + 1] > m) m = row[x + 1];
-            m = (m * REAL3D_GAIN_Q8 + 128) >> 8;
+            /* perf23: no dilation. The symmetric max filter also widened near
+             * objects on the side away from the warp and made halos worse. */
+            u32 m = (row[x] * REAL3D_GAIN_Q8 + 128) >> 8;
             o[x] = (u8)(m > 255 ? 255 : m);
         }
     }
@@ -1103,4 +1129,12 @@ int real3d_warp_luma_jbu_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
                                         u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_luma_jbu_range(src, dst, depth, width, height, src_stride, dst_stride,
                                depth_width, depth_height, begin, end, fractional_bits);
+}
+
+int real3d_warp_luma_reproject_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                                              u32 width, u32 height, u32 src_stride,
+                                              u32 dst_stride, u32 depth_width,
+                                              u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_luma_reproject_range(src, dst, depth, width, height, src_stride, dst_stride,
+                                     depth_width, depth_height, begin, end, fractional_bits);
 }

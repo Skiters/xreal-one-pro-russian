@@ -138,6 +138,18 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf23 (Real3D depth reprojection)
+
+perf22 on the device: no staircase, but halos appeared and depth barely
+grew. Cause: the depth map is in source coordinates while each output row is
+built in output coordinates (dst[x] = src[x + d]); next to a near object the
+output takes the background's displacement and repeats/eats the object's
+edge, more with stronger depth. perf22's symmetric dilation widened near
+depth on the wrong side too. Now each cell reads its displacement where the
+pixel comes from (one fixed-point step d = D(x + D(x)), per cell, luma and
+chroma), dilation removed, gain x1.5. Model: a 40 px near object keeps 41 px
+at shifts 12/22/30 px (before: 29/19/12 px). Oracle test_real3d_reproject.py.
+
 ## perf22 (Real3D depth pre-pass)
 
 perf21 on the device: 3D ~47 frames/s (warp 13–19 ms), no staircase; at
