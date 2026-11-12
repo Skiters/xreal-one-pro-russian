@@ -138,6 +138,16 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf22 (Real3D depth pre-pass)
+
+perf21 on the device: 3D ~47 frames/s (warp 13–19 ms), no staircase; at
+the strongest menu depth the owner still found it flat and saw halos; coef
+lost the autotune (92 vs 37 ms). Before the Pro+ warp the 480x270 map now
+gets a horizontal max dilation (the vendor Pro+ pipeline has a dilate stage:
+`dilate_ms` in libnr_image_post_processor's WarpCost fields) so near objects'
+edges move whole instead of dragging their colour into the background, and a
+x1.3 gain (clamped to 255) for more depth. Interior smoothing is unchanged.
+
 ## perf21 (AI HDR coef kernel)
 
 perf19 stage timing on the device (AI HDR, film): map 0.10 ms, convert

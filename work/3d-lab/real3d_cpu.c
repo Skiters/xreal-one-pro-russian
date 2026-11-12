@@ -767,6 +767,37 @@ int real3d_validate_frame_for_test(const struct real3d_frame *f) {
     return validate_frame(f);
 }
 
+/* perf22 depth pre-pass for the Pro+ path (480x270 map, not the image):
+ * 1. Horizontal dilation (max of left/self/right): the vendor Pro+ pipeline
+ *    has a dilate stage (dilate_ms in libnr_image_post_processor's WarpCost
+ *    fields) that our port skipped. Near objects widen by one cell, so their
+ *    silhouette moves whole and the smoothed displacement no longer drags the
+ *    object's edge colour into the background (halo at strong depth).
+ * 2. Gain: displacement x REAL3D_GAIN_Q8/256 (1.3), clamped to 255, for more
+ *    depth than the menu's strongest level. Interior smoothing is unchanged,
+ *    so no staircase returns. */
+#define REAL3D_GAIN_Q8 333U
+static u8 depth_pre[480 * 270];
+static void depth_prepass(const u8 *z, u8 *out, u32 dw, u32 dh) {
+    for (u32 y = 0; y < dh; ++y) {
+        const u8 *row = z + (size_t)y * dw;
+        u8 *o = out + (size_t)y * dw;
+        for (u32 x = 0; x < dw; ++x) {
+            u32 m = row[x];
+            if (x && row[x - 1] > m) m = row[x - 1];
+            if (x + 1 < dw && row[x + 1] > m) m = row[x + 1];
+            m = (m * REAL3D_GAIN_Q8 + 128) >> 8;
+            o[x] = (u8)(m > 255 ? 255 : m);
+        }
+    }
+}
+
+int real3d_depth_prepass_for_test(const u8 *z, u8 *out, u32 dw, u32 dh) {
+    if (!z || !out || !dw || !dh) return -22;
+    depth_prepass(z, out, dw, dh);
+    return 0;
+}
+
 static int process_frame(const struct real3d_frame *f) {
     /* Recovered Process ABI Q2/Q3/Q4: one warped I420 frame, 480x270 depth.
      * Stride is padding, never evidence of side-by-side or a pixel format. */
@@ -844,9 +875,14 @@ static int process_frame(const struct real3d_frame *f) {
         /* Four independent depth-row segments on the four Cortex-A53 cores. */
         struct segment_job jobs[4];
         u32 next_chunk = 0;
+        const u8 *zp = z;
+        if (f->depth_width * depth_height <= sizeof(depth_pre)) {
+            depth_prepass(z, depth_pre, f->depth_width, depth_height);
+            zp = depth_pre;
+        }
         for (u32 i = 0; i < 4; ++i) {
             jobs[i] = (struct segment_job){
-                .depth = z, .depth_width = f->depth_width,
+                .depth = zp, .depth_width = f->depth_width,
                 .depth_height = depth_height, .fractional_bits = f->fractional_bits,
                 .begin = 0, .end = depth_height, .next = &next_chunk, .rc = 0,
             };

@@ -99,6 +99,15 @@ def main(path):
     dst = C.create_string_buffer(64*12)
     assert smooth(b'\0'*64*12, dst, b'\0'*16*4, 48, 12, 64, 64, 16, 4, 0, 4, 3) == -22  # 3 rows per depth row
     assert bilinear(b'\0'*64*12, dst, b'\0'*16*4, 48, 12, 64, 64, 16, 4, 0, 4, 3) == -22
+    pre = lib.real3d_depth_prepass_for_test
+    pre.argtypes = [C.c_char_p, C.c_char_p, C.c_uint, C.c_uint]
+    for dw, dh in ((480, 270), (37, 5), (1, 1)):
+        z = bytes(rng.randrange(256) for _ in range(dw*dh))
+        out = C.create_string_buffer(dw*dh)
+        assert pre(z, out, dw, dh) == 0
+        exp = bytes(min(255, (max(z[y*dw+max(x-1, 0)], z[y*dw+x], z[y*dw+min(x+1, dw-1)])*333 + 128) >> 8)
+                    for y in range(dh) for x in range(dw))
+        assert out.raw == exp, ('prepass', dw, dh)
     print(f'Real3D smoothing oracle passed: {cases} cases (vertical and bilinear)')
 
 
