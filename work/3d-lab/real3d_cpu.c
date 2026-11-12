@@ -700,6 +700,17 @@ static int warp_chroma_pair_range(const u8 *u_src, u8 *u_dst, const u8 *v_src, u
                                  v_src, v_dst, v_src_stride, v_dst_stride, 0, 0, 1);
 }
 
+/* perf24: live chroma path with reprojection off (clean perf15-20 joint U/V). */
+static int warp_chroma_pair_clean_range(const u8 *u_src, u8 *u_dst, const u8 *v_src, u8 *v_dst,
+                                  const u8 *depth, u32 width, u32 height,
+                                  u32 u_src_stride, u32 u_dst_stride,
+                                  u32 v_src_stride, u32 v_dst_stride, u32 depth_width,
+                                  u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(u_src, u_dst, depth, width, height, u_src_stride, u_dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 1,
+                                 v_src, v_dst, v_src_stride, v_dst_stride, 0, 0, 0);
+}
+
 /* Dynamic scheduling: workers take SEGMENT_ROWS depth rows at a time from a
  * shared counter, so a core busy with Pilot's own threads does not hold up
  * the frame. [begin, end) bounds the depth rows this job set covers. */
@@ -720,12 +731,15 @@ static void *segment_worker(void *arg) {
          * cost 22-28 ms (36 frames/s) and perf19's hard layer selection
          * brought back halos and staircase. They stay in this file with
          * tests (warp_luma_cubic_range / warp_luma_jbu_range), unused. */
-        int rc = warp_luma_reproject_range(j->src[0], j->dst[0], j->depth, j->width[0],
+        /* perf24: reprojection (perf23) dragged the bright background into the
+         * near object's edge — white halos, worse with the x1.5 gain. Back to
+         * the artifact-free bilinear 2-tap path (perf5/perf11). */
+        int rc = warp_plane_cells_bilinear_range(j->src[0], j->dst[0], j->depth, j->width[0],
                                        j->height[0], j->src_stride[0], j->dst_stride[0],
                                        j->depth_width, j->depth_height, first, last,
                                        j->fractional_bits);
         if (rc && !j->rc) j->rc = rc;
-        rc = warp_chroma_pair_range(j->src[1], j->dst[1], j->src[2], j->dst[2], j->depth,
+        rc = warp_chroma_pair_clean_range(j->src[1], j->dst[1], j->src[2], j->dst[2], j->depth,
                                     j->width[1], j->height[1], j->src_stride[1], j->dst_stride[1],
                                     j->src_stride[2], j->dst_stride[2], j->depth_width,
                                     j->depth_height, first, last, j->fractional_bits);
@@ -803,7 +817,7 @@ int real3d_validate_frame_for_test(const struct real3d_frame *f) {
  * 2. Gain: displacement x REAL3D_GAIN_Q8/256 (1.3), clamped to 255, for more
  *    depth than the menu's strongest level. Interior smoothing is unchanged,
  *    so no staircase returns. */
-#define REAL3D_GAIN_Q8 384U   /* perf23: x1.5 (x1.3 was barely noticeable) */
+#define REAL3D_GAIN_Q8 256U   /* perf24: x1.0 — gain reintroduced bleed; depth via native "Real3D One Pro" row */
 static u8 depth_pre[480 * 270];
 static void depth_prepass(const u8 *z, u8 *out, u32 dw, u32 dh) {
     for (u32 y = 0; y < dh; ++y) {
