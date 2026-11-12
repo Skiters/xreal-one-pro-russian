@@ -138,6 +138,18 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf19 (Real3D object separation)
+
+The owner found perf16's 3D flatter than the native One Pro mesh. Same depth
+input (Pilot's range even grew), same total disparity; the mesh moves image
+pieces whole, so foreground keeps a crisp boundary, while the smoothed
+backward warp blends near and far displacement at the silhouette. At the
+boundary cells (jump > 1 px) the four candidate displacements are now split
+into a near and a far layer; when the pixel's luma clearly belongs to one
+layer (weight >= 2x the other) only that layer is used, otherwise the soft
+mix is kept (no staircase where luma cannot tell). Interior smoothing is
+unchanged. Cost on an M2 synthetic frame: +0.25 ms luma (boundary pixels only).
+
 ## perf18 (Real3D cost)
 
 perf16 on the device: warp 20–30 ms (was ~15–16), 3D ~37 frames/s (was ~48)

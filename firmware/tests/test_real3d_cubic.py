@@ -67,11 +67,21 @@ def oracle(src, depth, width, height, stride, dw, dh, bits, begin, end, fill, jb
                     hw, side = abs(hnum), (l if hnum < 0 else r)
                     cells = [(zy, zx, (8-hw)*(8-w)), (zy, side, hw*(8-w)), (other, zx, (8-hw)*w), (other, side, hw*w)]
                     g = src[y*stride+x]
-                    ws = acc = 0
-                    for rr, cc, sw in cells:
+                    dvs = [raw(rr, cc) for rr, cc, _ in cells]
+                    mid2 = min(dvs) + max(dvs)
+                    wn = an = wf = af = 0
+                    for (rr, cc, sw), dv in zip(cells, dvs):
                         wt = sw*JBU[abs(g-centre(rr, cc))]
-                        ws += wt
-                        acc += wt*raw(rr, cc)
+                        if 2*dv >= mid2:
+                            wn += wt; an += wt*dv
+                        else:
+                            wf += wt; af += wt*dv
+                    if wf and wn >= 2*wf:
+                        ws, acc = wn, an
+                    elif wn and wf >= 2*wn:
+                        ws, acc = wf, af
+                    else:
+                        ws, acc = wn + wf, an + af
                     out[y*stride+x] = cubic(row, x*32 + (acc + ws//2)//ws, width)
                     continue
             shift = vertical(zx)

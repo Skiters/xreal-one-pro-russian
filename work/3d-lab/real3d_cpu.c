@@ -499,12 +499,26 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                             u32 dv[4] = { here[zx], here[side], oth[zx], oth[side] };
                             u32 cv[4] = { cen_cur[zx], cen_cur[side], ocen[zx], ocen[side] };
                             u32 sw[4] = { (8 - hw) * (8 - vw), hw * (8 - vw), (8 - hw) * vw, hw * vw };
-                            u32 g = s[x + k], wsum = 0, acc = 0;
+                            /* perf19 sharp boundaries: split the four cells into a
+                             * near and a far layer (around the mid displacement).
+                             * When the pixel's luma clearly belongs to one layer
+                             * (its weight >= 2x the other), use only that layer,
+                             * so objects separate from the background as with the
+                             * native mesh; ambiguous luma keeps the soft mix. */
+                            u32 g = s[x + k], dmin = dv[0], dmax = dv[0];
+                            for (u32 i = 1; i < 4; ++i) { if (dv[i] < dmin) dmin = dv[i]; if (dv[i] > dmax) dmax = dv[i]; }
+                            u32 mid2 = dmin + dmax;                 /* 2 * mid */
+                            u32 wn = 0, an = 0, wf = 0, af = 0;
                             for (u32 i = 0; i < 4; ++i) {
                                 u32 diff = g > cv[i] ? g - cv[i] : cv[i] - g;
                                 u32 w = sw[i] * JBU_RANGE_Q8[diff];
-                                wsum += w; acc += w * dv[i];
+                                if (2 * dv[i] >= mid2) { wn += w; an += w * dv[i]; }
+                                else { wf += w; af += w * dv[i]; }
                             }
+                            u32 wsum, acc;
+                            if (wf && wn >= 2 * wf) { wsum = wn; acc = an; }
+                            else if (wn && wf >= 2 * wn) { wsum = wf; acc = af; }
+                            else { wsum = wn + wf; acc = an + af; }
                             u32 shift = (acc + wsum / 2) / wsum;
                             int q = (int)((x + k) * 32 + shift);
                             d[x + k] = cubic ? sample_cubic_q5(s, q, width) : sample_q5(s, q, width);
