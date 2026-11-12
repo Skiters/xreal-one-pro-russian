@@ -138,6 +138,18 @@ recovered to 18.7 ms, ~47 fps (perf4: ~24 ms, 39).
   one 16-byte load + TBL. Destination planes are mapped without the cache
   invalidate (fully overwritten, 64-byte aligned lines, flushed after).
 
+## perf16 (Real3D edge-aware depth)
+
+Where the 480x270 displacement jumps by more than 1/2 pixel around a cell,
+each luma pixel mixes the 2x2 nearest cells' raw displacements with a
+spatial (bilinear) weight times a range weight from how close its source
+luma is to each cell's centre luma (Gaussian, sigma 12 levels): joint
+bilateral upsampling, so the depth boundary follows the object contour
+instead of a ramp across foreground and background (halo/stretch around
+silhouettes). Elsewhere the perf2/perf5 smoothing is unchanged. Chroma keeps
+the vertical blend. Oracle in `test_real3d_cubic.py` (incl. a bright object
+on a dark background).
+
 ## perf15 (Real3D sharpness + joint chroma)
 
 From the external audit (REAL3D-AUDIT-2026-11-12.md). 3D frame rate is

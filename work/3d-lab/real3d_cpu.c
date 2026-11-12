@@ -303,6 +303,16 @@ static void sample_cell4_cubic(u8 *dst, const u8 *s, u32 sx, u32 f) {
 }
 
 #define HFLAT 4U
+
+/* perf16 edge-aware depth (joint bilateral upsampling, luma only). Where the
+ * 480x270 displacement jumps by more than JBU_EDGE (1/2 pixel) around a
+ * cell, each pixel takes a weighted mix of the 2x2 nearest cells' raw
+ * displacements: spatial (bilinear) weight times a range weight from how
+ * close the pixel's source luma is to each cell's centre luma. The depth
+ * boundary then follows the object contour instead of a smooth ramp across
+ * foreground and background. Elsewhere the perf2/perf5 smoothing is kept. */
+#define JBU_EDGE 16U
+static const unsigned short JBU_RANGE_Q8[256] = {256, 254, 249, 240, 229, 215, 199, 182, 164, 146, 128, 110, 94, 79, 66, 54, 43, 34, 27, 21, 16, 12, 9, 6, 5, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 /* Four luma pixels with individual Q5 displacements: one 16-byte load and a
  * TBL gather instead of eight byte loads. Same arithmetic as sample_q5.
  * Returns 0 (caller falls back) when the window does not fit. */
@@ -342,7 +352,7 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 depth_height, u32 begin, u32 end,
                                  u32 fractional_bits, int smooth,
                                  const u8 *src2, u8 *dst2, u32 src2_stride, u32 dst2_stride,
-                                 int cubic) {
+                                 int cubic, int jbu) {
     if (fractional_bits < 2 || fractional_bits > 4 ||
         !depth_width || !depth_height || !width || !height ||
         !src || !dst || !depth || src_stride < width || dst_stride < width) return -22;
@@ -356,11 +366,26 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
     if (smooth && !den_shift) return -22;
     if (dst2 && (!src2 || smooth == 2 || src2_stride < width || dst2_stride < width)) return -22;
     cubic = cubic && pixels == 4;
+    jbu = jbu && smooth == 2 && pixels == 4 && rows == 4;
     for (u32 zy = begin; zy < end; ++zy) {
         const u8 *z = depth + (size_t)zy * depth_width;
         const u8 *up = depth + (size_t)(zy ? zy - 1 : zy) * depth_width;
         const u8 *down = depth + (size_t)(zy + 1 < depth_height ? zy + 1 : zy) * depth_width;
         u16 source_x[480], here[480], above[480], below[480], blend[480];
+        u8 cen_cur[480], cen_up[480], cen_dn[480];
+        if (jbu) {
+            /* Centre luma of each cell: mean of its 2x2 centre pixels. */
+            u32 rz[3] = { zy ? zy - 1 : zy, zy, zy + 1 < depth_height ? zy + 1 : zy };
+            u8 *cens[3] = { cen_up, cen_cur, cen_dn };
+            for (u32 r = 0; r < 3; ++r) {
+                const u8 *r1 = src + (size_t)(rz[r] * 4 + 1) * src_stride;
+                const u8 *r2 = src + (size_t)(rz[r] * 4 + 2) * src_stride;
+                for (u32 zx = 0; zx < depth_width; ++zx) {
+                    u32 c = zx * 4 + 1;
+                    cens[r][zx] = (u8)((r1[c] + r1[c + 1] + r2[c] + r2[c + 1] + 2) >> 2);
+                }
+            }
+        }
         for (u32 zx = 0; zx < depth_width; ++zx) {
             here[zx] = (u16)depth_shift(z[zx], width, depth_width, fractional_bits);
             source_x[zx] = (u16)(zx * pixels * 32 + here[zx]);
@@ -387,6 +412,34 @@ static int warp_plane_cells_impl(const u8 *src, u8 *dst, const u8 *depth,
             const u8 *s2 = dst2 ? src2 + (size_t)y * src2_stride : NULL;
             u8 *d2 = dst2 ? dst2 + (size_t)y * dst2_stride : NULL;
             for (u32 zx = 0, x = 0; zx < depth_width; ++zx, x += pixels) {
+                if (jbu) {
+                    u32 l = zx ? zx - 1 : zx, r = zx + 1 < depth_width ? zx + 1 : zx;
+                    int num = 2 * (int)ry + 1 - (int)rows;
+                    const u16 *oth = num < 0 ? above : below;
+                    const u8 *ocen = num < 0 ? cen_up : cen_dn;
+                    u32 vw = (u32)(num < 0 ? -num : num);
+                    u32 lo = here[zx], hi = here[zx], vals[5] = { here[l], here[r], oth[zx], oth[l], oth[r] };
+                    for (u32 i = 0; i < 5; ++i) { if (vals[i] < lo) lo = vals[i]; if (vals[i] > hi) hi = vals[i]; }
+                    if (hi - lo > JBU_EDGE) {
+                        for (u32 k = 0; k < 4; ++k) {
+                            int hnum = 2 * (int)k + 1 - 4;
+                            u32 hw = (u32)(hnum < 0 ? -hnum : hnum), side = hnum < 0 ? l : r;
+                            u32 dv[4] = { here[zx], here[side], oth[zx], oth[side] };
+                            u32 cv[4] = { cen_cur[zx], cen_cur[side], ocen[zx], ocen[side] };
+                            u32 sw[4] = { (8 - hw) * (8 - vw), hw * (8 - vw), (8 - hw) * vw, hw * vw };
+                            u32 g = s[x + k], wsum = 0, acc = 0;
+                            for (u32 i = 0; i < 4; ++i) {
+                                u32 diff = g > cv[i] ? g - cv[i] : cv[i] - g;
+                                u32 w = sw[i] * JBU_RANGE_Q8[diff];
+                                wsum += w; acc += w * dv[i];
+                            }
+                            u32 shift = (acc + wsum / 2) / wsum;
+                            int q = (int)((x + k) * 32 + shift);
+                            d[x + k] = cubic ? sample_cubic_q5(s, q, width) : sample_q5(s, q, width);
+                        }
+                        continue;
+                    }
+                }
                 if (smooth == 2) {
                     u32 mid = blend[zx];
                     u32 left = blend[zx ? zx - 1 : zx];
@@ -467,7 +520,7 @@ static int warp_plane_cells_range(const u8 *src, u8 *dst, const u8 *depth,
                                   u32 dst_stride, u32 depth_width,
                                   u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 0, NULL, NULL, 0, 0, 0);
+                                 depth_width, depth_height, begin, end, fractional_bits, 0, NULL, NULL, 0, 0, 0, 0);
 }
 
 static int warp_plane_cells_smooth_range(const u8 *src, u8 *dst, const u8 *depth,
@@ -475,7 +528,7 @@ static int warp_plane_cells_smooth_range(const u8 *src, u8 *dst, const u8 *depth
                                          u32 dst_stride, u32 depth_width,
                                          u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 1, NULL, NULL, 0, 0, 0);
+                                 depth_width, depth_height, begin, end, fractional_bits, 1, NULL, NULL, 0, 0, 0, 0);
 }
 
 static int warp_plane_cells(const u8 *src, u8 *dst, const u8 *depth,
@@ -502,7 +555,7 @@ static int warp_plane_cells_bilinear_range(const u8 *src, u8 *dst, const u8 *dep
                                            u32 dst_stride, u32 depth_width,
                                            u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
-                                 depth_width, depth_height, begin, end, fractional_bits, 2, NULL, NULL, 0, 0, 0);
+                                 depth_width, depth_height, begin, end, fractional_bits, 2, NULL, NULL, 0, 0, 0, 0);
 }
 
 static int warp_luma_cubic_range(const u8 *src, u8 *dst, const u8 *depth,
@@ -511,7 +564,16 @@ static int warp_luma_cubic_range(const u8 *src, u8 *dst, const u8 *depth,
                                  u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
                                  depth_width, depth_height, begin, end, fractional_bits, 2,
-                                 NULL, NULL, 0, 0, 1);
+                                 NULL, NULL, 0, 0, 1, 0);
+}
+
+static int warp_luma_jbu_range(const u8 *src, u8 *dst, const u8 *depth,
+                               u32 width, u32 height, u32 src_stride,
+                               u32 dst_stride, u32 depth_width,
+                               u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_plane_cells_impl(src, dst, depth, width, height, src_stride, dst_stride,
+                                 depth_width, depth_height, begin, end, fractional_bits, 2,
+                                 NULL, NULL, 0, 0, 1, 1);
 }
 
 static int warp_chroma_pair_range(const u8 *u_src, u8 *u_dst, const u8 *v_src, u8 *v_dst,
@@ -521,7 +583,7 @@ static int warp_chroma_pair_range(const u8 *u_src, u8 *u_dst, const u8 *v_src, u
                                   u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
     return warp_plane_cells_impl(u_src, u_dst, depth, width, height, u_src_stride, u_dst_stride,
                                  depth_width, depth_height, begin, end, fractional_bits, 1,
-                                 v_src, v_dst, v_src_stride, v_dst_stride, 0);
+                                 v_src, v_dst, v_src_stride, v_dst_stride, 0, 0);
 }
 
 /* Dynamic scheduling: workers take SEGMENT_ROWS depth rows at a time from a
@@ -539,7 +601,7 @@ static void *segment_worker(void *arg) {
         /* Luma: bilinear displacement + 4-tap Catmull-Rom (perf15). Chroma:
          * vertical blend, U and V in one pass sharing the geometry (perf15,
          * byte-identical to two passes). */
-        int rc = warp_luma_cubic_range(j->src[0], j->dst[0], j->depth, j->width[0],
+        int rc = warp_luma_jbu_range(j->src[0], j->dst[0], j->depth, j->width[0],
                                        j->height[0], j->src_stride[0], j->dst_stride[0],
                                        j->depth_width, j->depth_height, first, last,
                                        j->fractional_bits);
@@ -905,4 +967,12 @@ int real3d_warp_chroma_pair_range_for_test(const u8 *u_src, u8 *u_dst, const u8 
     return warp_chroma_pair_range(u_src, u_dst, v_src, v_dst, depth, width, height,
                                   stride, stride, stride, stride, depth_width, depth_height,
                                   begin, end, fractional_bits);
+}
+
+int real3d_warp_luma_jbu_range_for_test(const u8 *src, u8 *dst, const u8 *depth,
+                                        u32 width, u32 height, u32 src_stride,
+                                        u32 dst_stride, u32 depth_width,
+                                        u32 depth_height, u32 begin, u32 end, u32 fractional_bits) {
+    return warp_luma_jbu_range(src, dst, depth, width, height, src_stride, dst_stride,
+                               depth_width, depth_height, begin, end, fractional_bits);
 }
