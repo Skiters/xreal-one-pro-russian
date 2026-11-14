@@ -208,6 +208,9 @@ def test(path):
         run(O+0xf9bc0,[D+0x7000,vector,D+0x7100,D+0x7200],stop=O+0xf9bc4)
         assert geometry_calls()>before, 'Native registration must force layout'
         assert [positions[readq(p+0x38)] for p in registered]==[(0,3+i*82) for i in range(5)]
+    else:
+        print('SKIPPED layout-cache checks: adapter has no layout_list symbol '
+              '(not built with -DXREAL_UI_FAST=1); other UI checks still run.')
     # All visible children have equal padding and stay within their row.
     for item in registered:
         title,icon,mark=(readq(item+at) for at in (0,0x18,0x20))

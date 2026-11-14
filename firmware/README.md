@@ -64,13 +64,27 @@ reproducibility of the Windows PE is not claimed.
 ## Tests
 
 Python dependencies for ARM64 emulation are pinned in `test-requirements.txt`.
+The existing `capstone` dependency is also required by `generate_compare_ui.py`
+for `--compare-onepro-warp` builds and by `test_compare_ui.py`; it is not listed
+in `test-requirements.txt`. The required version is not pinned here.
 
 ```text
 python -m pip install -r firmware/test-requirements.txt
 python -m unittest discover -s installer -p test_*.py
 python firmware/tests/test_geometry.py
 python firmware/tests/test_frame_bounds.py
+python firmware/tests/test_python_guards.py
 ```
+
+`test_python_guards.py` needs no device, USB or BIN. It checks that Pilot JSON
+`//` comments are stripped only outside strings (URLs stay intact, error line
+numbers are preserved), that build guards raise `ValueError` and still hold under
+`python -O` (the test re-runs itself with `-O`), and that `measure.py` reports
+HDR and Real3D as separate `stream` sessions. `build.py` refuses a general config
+unless `dp.mono` is `1920_1080_90_DEFAULT`, `oled.default_resolution` is
+`1920_1080_90`, synthetic stereo is `1920_1080_60` and frame-rate boost and
+overclocking stay off. The generator guard unit tests use synthetic instructions;
+they do not replace real capstone disassembly or an ARM64 UI test.
 
 `REAL3D_LIB` may point to another newly built adapter. The default is
 `outputs/v<VERSION>/libxreal_cpu_adapter.so` using `installer/version.py`. The tests execute the ARM64
@@ -83,6 +97,7 @@ gcc -O2 -shared -fPIC firmware/lut_fast.c -o /tmp/xreal-lut.so
 python3 firmware/tests/test_lut.py /tmp/xreal-lut.so --bin outputs/xreal-pilot2-real3d-cpu/XREAL-Pilot2-RU-Hebe-Real3D-CPU.bin
 gcc -O2 -pthread firmware/runtime.c firmware/tests/runtime_test.c -o /tmp/xreal-runtime
 /tmp/xreal-runtime
+sh firmware/tests/run_cpu_adapter_faults.sh /tmp/xreal-cpu-adapter-faults
 gcc -O2 -shared -fPIC -pthread -Ifirmware firmware/cpu_adapter.c firmware/lut_fast.c firmware/runtime.c work/3d-lab/real3d_cpu.c firmware/tests/hal_stub.c -o /tmp/xreal-rpc.so
 python3 firmware/tests/test_rpc_failures.py /tmp/xreal-rpc.so
 ```
@@ -98,7 +113,8 @@ These host tests do not validate the target's HAL or optics.
 3. Real3D has visible depth on the same scene, correct colored edges and
    no stale frames. Use movement as well as a static scene.
 4. Capture logs for at least 60 seconds per mode. `measure.py` reports sampled
-   callback throughput and stage times; separately inspect NPU/queue delays,
+   callback throughput and stage times per stream (`hdr`, `real3d`; each init
+   line restarts only its own stream); separately inspect NPU/queue delays,
    display frame pacing, temperature and end-to-end latency. A 60 Hz EDID
    entry does not establish 60 processed frames/s.
 5. Record these results for the relevant model. Current One Pro user confirmation

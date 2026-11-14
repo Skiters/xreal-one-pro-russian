@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / 'installer'))
 from package_format import container_crc, read_container
 from profiles import ABI_LIBRARIES, MMZ_START, MMZ_END, SOC
 from version import VERSION
+import jsonc
 
 PILOT = '2.0.0.20260920102250'
 BASE_SHA = '1b72fc6acd90fc9b8995644cca659907d571292f19a19a33cdbddd59da5decd0'
@@ -24,7 +25,8 @@ SOURCES = ['firmware/cpu_adapter.c', 'firmware/lut_fast.c', 'firmware/runtime.c'
            'firmware/runtime.h', 'work/3d-lab/real3d_cpu.c', 'firmware/build.py',
            'installer/profiles.py', 'installer/package_format.py', 'installer/version.py',
            'firmware/compare_ui.c', 'firmware/ui_dispatch.S', 'firmware/generate_compare_ui.py',
-           'firmware/ui_fast.py', 'firmware/onepro_warp.c', 'firmware/onepro_warp.h', 'firmware/compare_modes.py']
+           'firmware/ui_fast.py', 'firmware/onepro_warp.c', 'firmware/onepro_warp.h', 'firmware/compare_modes.py',
+           'firmware/jsonc.py']
 
 
 def sha(data):
@@ -39,7 +41,29 @@ def checked(path, expected):
 
 
 def config(data):
-    return json.loads(re.sub(r'//[^\n]*', '', data.decode('utf-8')))
+    return jsonc.loads(data)
+
+
+# Same base BIN (BASE_SHA): 90 Hz default display mode, 60 Hz synthetic stereo.
+DISPLAY_DEFAULTS = (
+    (('state_machine', 'space_screen', 'frame_rate_boost_enable'), False),
+    (('state_machine', 'space_screen', 'over_clocking_mode'), 0),
+    (('display', 'dp', 'synth_stereo'), '1920_1080_60'),
+    (('display', 'dp', 'mono'), '1920_1080_90_DEFAULT'),
+    (('display', 'oled', 'default_resolution'), '1920_1080_90'),
+)
+
+
+def check_display_defaults(general):
+    """Raise ValueError unless the general config keeps vendor display modes; never modifies it."""
+    for keys, expected in DISPLAY_DEFAULTS:
+        value = general
+        for key in keys:
+            if not isinstance(value, dict) or key not in value:
+                raise ValueError('Missing display setting: '+'.'.join(keys))
+            value = value[key]
+        if type(value) is not type(expected) or value != expected:
+            raise ValueError(f'Unexpected display setting {".".join(keys)}={value!r}; expected {expected!r}')
 
 
 def encode(value):
@@ -133,9 +157,7 @@ def build(args):
             from ui_fast import apply
             ui_fast = apply(files, model)
         general = config(files['pilot/conf/pilot_default_config.json'])
-        assert general['state_machine']['space_screen']['frame_rate_boost_enable'] is False
-        assert general['state_machine']['space_screen']['over_clocking_mode'] == 0
-        assert general['display']['dp']['synth_stereo'] == '1920_1080_60'
+        check_display_defaults(general)
         manifest = dict(provenance, schema=2, profile=model+'-603',
                         soc=SOC, pilot=PILOT, abi_libraries=ABI_LIBRARIES,
                         mmz=[MMZ_START, MMZ_END],

@@ -23,7 +23,8 @@ def generate(data):
            'mov x19,x0', 'mov x20,x1', 'mov x21,x2', 'mov x22,x3',
            'mov x23,x4', 'mov x24,x5', 'mov x28,x6']
     decoded = list(Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN).disasm(block, begin))
-    assert len(decoded)*4 == len(block)
+    if len(decoded)*4 != len(block):
+        raise ValueError('Partial disassembly of the vendor row constructor')
     for ins in decoded:
         if ins.mnemonic in ('bl', 'adrp'):
             args = ins.op_str.split(', ')
@@ -35,7 +36,8 @@ def generate(data):
             if ins.mnemonic == 'bl':
                 out.append('blr x16')
         else:
-            assert ins.mnemonic in ('ldr', 'str', 'mov', 'add'), str(ins)
+            if ins.mnemonic not in ('ldr', 'str', 'mov', 'add'):
+                raise ValueError(f'Unexpected instruction {ins.mnemonic} {ins.op_str}')
             out.append(f'.inst 0x{int.from_bytes(ins.bytes, "little"):08x}')
     out += ['ldp x19,x20,[sp,#16]', 'ldp x21,x22,[sp,#32]',
             'ldp x23,x24,[sp,#48]', 'ldr x28,[sp,#64]',

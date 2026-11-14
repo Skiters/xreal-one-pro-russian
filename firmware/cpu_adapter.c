@@ -99,7 +99,8 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         /* Validate the result before allocating or changing current state. */
         if(!valid(a->result,64)||!valid(a->lut,14739)||
            (a->result<a->lut+14739 && a->lut<a->result+64))return -22;
-        u8 *p=map(a->lut,14739);if(!p){trace("LUT map failed",a->lut,14739,0);return -5;}
+        /* Inputs are validated and disjoint: report the failure via result. */
+        u8 *p=map(a->lut,14739);if(!p){trace("LUT map failed",a->lut,14739,0);(void)result(a->result,-5);return -5;}
         /* DSP ABI carries three 17^3 channel planes, not RGB triplets. */
         u16 cube[14739];
         for(u32 i=0;i<4913;i++)for(u32 c=0;c<3;c++)
@@ -138,9 +139,10 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
     }
     for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
     struct timespec before,converted,flushed;
-    clock_gettime(1,&before);
+    /* Timing is diagnostic only: a failed reading is never used or logged. */
+    int before_ok=clock_gettime(1,&before)==0;
     rc=rgb_parallel(dense,planes,a->strides,a->width,a->height);
-    clock_gettime(1,&converted);
+    int converted_ok=clock_gettime(1,&converted)==0;
     if(!rc && sizes[0]>0x100000) {
         /* Vendor HAL uses a global cache-flush ioctl for sizes above 1 MiB.
          * All three RGB planes have been modified before this call. */
@@ -155,7 +157,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         }
         if(rc)break;
     }
-    clock_gettime(1,&flushed);
+    int flushed_ok=clock_gettime(1,&flushed)==0;
     if(frame_count%
 #ifdef XREAL_UI_FAST
        1800
@@ -163,12 +165,17 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
        30
 #endif
        ==0) {
-        long convert_us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
-        long flush_us=(flushed.sec-converted.sec)*1000000+(flushed.nsec-converted.nsec)/1000;
-        trace("convert microseconds",a->planes[0],a->width,convert_us);
-        trace("flush microseconds",a->planes[0],a->width,flush_us);
-        trace("frame timestamp microseconds",0,frame_count,
-              flushed.sec*1000000+flushed.nsec/1000);
+        if(before_ok && converted_ok) {
+            long convert_us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
+            trace("convert microseconds",a->planes[0],a->width,convert_us);
+        }
+        if(converted_ok && flushed_ok) {
+            long flush_us=(flushed.sec-converted.sec)*1000000+(flushed.nsec-converted.nsec)/1000;
+            trace("flush microseconds",a->planes[0],a->width,flush_us);
+        }
+        if(flushed_ok)
+            trace("frame timestamp microseconds",0,frame_count,
+                  flushed.sec*1000000+flushed.nsec/1000);
     }
 done:
     for(u32 i=0;i<3;i++)if(planes[i])ar_hal_sys_munmap(planes[i],sizes[i]);

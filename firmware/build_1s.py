@@ -61,7 +61,8 @@ def build(args):
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(packed)
     _, verified, target = read_container(args.output, PILOT, 0x69)
-    assert target == ONE_S_TARGET
+    if target != ONE_S_TARGET:
+        raise ValueError('Readback target differs from the 1S target: '+repr(target))
     report = {'sha256': hashlib.sha256(packed).hexdigest(), 'bytes': len(packed),
               'readback_files': len(verified), 'stock_sha256': STOCK_SHA,
               'translation_sha256': FIRMWARE_SHA, 'changed_vendor_files': changed,

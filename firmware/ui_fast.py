@@ -1,8 +1,9 @@
 """Opt-in One Pro UI experiment; exact rc7 OSD, no panel/EDID changes."""
 import hashlib
 import json
-import re
 import struct
+
+import jsonc
 
 OSD_SHA = '0067f65b58d6f708d75163ce89224162f0d62c5ee054579eb65b46b9dc77978e'
 # Refresh and animation timers only. Input polling remains 30 ms.
@@ -43,7 +44,7 @@ def apply(files, model):
     osd = 'pilot/bin/libnr_osd.so'
     files[osd] = patch_osd(files[osd])
     path = 'pilot/conf/pilot_default_config.json'
-    cfg = json.loads(re.sub(r'//[^\n]*', '', files[path].decode('utf-8')))
+    cfg = jsonc.loads(files[path])
     settings = cfg['osd']
     expected = {'enable_action_log': 1, 'enable_interface_log': 1,
                 'boot_wait_time1': 1.0, 'boot_wait_time2': 7}

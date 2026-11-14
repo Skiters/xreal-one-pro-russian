@@ -1,7 +1,7 @@
 import struct
 from arm64_helper import (Uc, UC_ARCH_ARM64, UC_MODE_ARM, BASE, SRC, STACK, STOP,
                           elf, symbols, UC_ARM64_REG_X0, UC_ARM64_REG_SP,
-                          UC_ARM64_REG_LR)
+                          UC_ARM64_REG_LR, UC_ARM64_REG_PC)
 
 # One captured descriptor from the physical One Pro.
 base=[1920,1080,2048,1024,1920,1024,480,2,
@@ -22,6 +22,9 @@ def validate(values):
     machine.reg_write(UC_ARM64_REG_SP,STACK)
     machine.reg_write(UC_ARM64_REG_LR,STOP)
     machine.emu_start(BASE+symbols['real3d_validate_frame_for_test'],STOP,count=100000)
+    # emu_start also returns when the instruction budget is exhausted.
+    if machine.reg_read(UC_ARM64_REG_PC)!=STOP:
+        raise AssertionError('Validator did not return within instruction budget')
     assert bytes(machine.mem_read(SRC,len(descriptor)))==descriptor
     result=machine.reg_read(UC_ARM64_REG_X0)&0xffffffff
     return result if result<0x80000000 else result-0x100000000

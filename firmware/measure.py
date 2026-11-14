@@ -8,28 +8,32 @@ import statistics
 
 def summarize(text):
     text=text.replace('\0','')
+    # HDR and Real3D callbacks are independent streams with their own frame
+    # counters; each init line only restarts its own stream.
     sessions=[]
-    samples=[]
+    current={'hdr':[],'real3d':[]}
+    def finish(stream):
+        if current[stream]:sessions.append((stream,current[stream]))
+        current[stream]=[]
     for line in text.splitlines():
-        if re.search(r'Real3D CPU init|CPU v7: LUT initialized',line):
-            if samples: sessions.append(samples)
-            samples=[]
+        if re.search(r'Real3D CPU init',line):finish('real3d')
+        if re.search(r'CPU v7: LUT initialized',line):finish('hdr')
         match=re.search(r'frame=(\d+).*time_us=(\d+)/(\d+)/(\d+) stamp_us=(\d+)',line)
         if match:
             frame,mapping,compute,flush,stamp=map(int,match.groups())
-            samples.append(dict(frame=frame,stamp=stamp,map_us=mapping,
-                                compute_us=compute,flush_us=flush))
+            current['real3d'].append(dict(frame=frame,stamp=stamp,map_us=mapping,
+                                          compute_us=compute,flush_us=flush))
         match=re.search(r'frame timestamp microseconds .*size=(\d+) value=(\d+)',line)
         if match:
             frame,stamp=map(int,match.groups())
-            samples.append(dict(frame=frame,stamp=stamp))
-    if samples:sessions.append(samples)
+            current['hdr'].append(dict(frame=frame,stamp=stamp))
+    for stream in current:finish(stream)
     result=[]
-    for session in sessions:
+    for stream,session in sessions:
         intervals=[(b['frame']-a['frame'])*1e6/(b['stamp']-a['stamp'])
                    for a,b in zip(session,session[1:])
                    if b['stamp']>a['stamp'] and b['frame']>a['frame']]
-        report={'samples':len(session),'interval_callback_rates':intervals}
+        report={'stream':stream,'samples':len(session),'interval_callback_rates':intervals}
         if intervals:
             report.update(min_callback_fps=min(intervals),
                           median_callback_fps=statistics.median(intervals))
