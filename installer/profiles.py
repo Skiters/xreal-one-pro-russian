@@ -75,3 +75,19 @@ def check_abi(probe, build, emit=lambda *_: None):
     if not any(a == MMZ_START and b == MMZ_END for a, b in ranges):
         raise RuntimeError('Карта видеопамяти отличается от проверенного профиля. Запись не начата.')
     return {'libraries': observed, 'mmz': [MMZ_START, MMZ_END], 'profile': build['profile']}
+
+
+def sku_text(raw):
+    """Recognize only lossless alternate representations of an exact SKU."""
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        encodings = ('utf-16',)
+    else:
+        encodings = ('ascii', 'utf-16-le', 'utf-16-be')
+    for encoding in encodings:
+        try:
+            value = raw.decode(encoding).rstrip('\0')
+        except UnicodeError:
+            continue
+        if re.fullmatch(r'X[0-9]{7}', value):
+            return value
+    return raw.rstrip(b'\0').decode('utf-8', errors='backslashreplace')

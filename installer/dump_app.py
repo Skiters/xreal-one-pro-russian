@@ -10,8 +10,11 @@ from tkinter import ttk, filedialog, messagebox
 import dump_core
 
 
-def main():
-    root = tk.Tk(); root.title('XREAL · Сбор дампа 0.1')
+def open_window(parent=None):
+    root = tk.Toplevel(parent) if parent else tk.Tk()
+    root.title('XREAL · Сбор дампа')
+    if parent:
+        root.transient(parent)
     root.geometry(f'{min(780,root.winfo_screenwidth()-60)}x{min(580,root.winfo_screenheight()-100)}')
     shell = ttk.Frame(root, padding=12); shell.pack(fill='both',expand=True)
     canvas=tk.Canvas(shell,highlightthickness=0)
@@ -38,7 +41,7 @@ def main():
     refresh_button=ttk.Button(frame,text='Обновить список',command=refresh);refresh_button.pack(anchor='w',pady=8)
     def collect():
         if combo.current()<0:return
-        folder=filedialog.askdirectory(title='Куда сохранить дамп?')
+        folder=filedialog.askdirectory(parent=root, title='Куда сохранить дамп?')
         if not folder:return
         dest=Path(folder)/datetime.now().strftime('XREAL-dump-%Y%m%d-%H%M%S-%f')
         selected=found[combo.current()].copy();stop.clear();busy[0]=True
@@ -66,7 +69,12 @@ def main():
         if busy[0]:stop.set();status.set('Останавливаем сбор. Дождитесь завершения текущего чтения.')
         else:root.destroy()
     root.protocol('WM_DELETE_WINDOW',close)
-    refresh();poll();root.mainloop()
+    refresh();poll()
+    return root
+
+
+def main():
+    open_window().mainloop()
 
 
 if __name__=='__main__':

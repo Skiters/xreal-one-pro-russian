@@ -11,6 +11,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'work'))
 from xreal_usb_probe import Probe
 import hid
+from profiles import ABI_LIBRARIES, SOC
 
 LIMIT = 64 * 1024 * 1024
 TOTAL = 1024 * 1024 * 1024
@@ -26,6 +27,28 @@ PATHS = [
     'libhal_dsp.so', 'libhal_npu.so', 'libmpi_dsp.so', 'libmpi_npu.so',
     'libhal_sys.so', 'libmpp_service.so', 'librknn_runtime.so', 'librknnrt.so'
 )] + ['/vendor/lib64/librknn_runtime.so', '/mnt/ceva_ls.bin']
+
+
+# Include exact file requests so a PID/SKU investigation can compare library hashes.
+PATHS.extend(path for path in ABI_LIBRARIES if path not in PATHS)
+
+
+def evidence(report):
+    hashes = {}
+    for entry in report['requests']:
+        path = entry['remote']
+        if path not in ABI_LIBRARIES:
+            continue
+        files = [f for f in entry.get('files', [])
+                 if PurePosixPath(f['name']).name == PurePosixPath(path).name]
+        if len(files) == 1:
+            hashes[path] = files[0]['sha256']
+    soc = report['identity'].get('soc', {})
+    return {'reference_soc': SOC,
+            'soc_matches': soc.get('value') == SOC if soc.get('status') == 0 else None,
+            'libraries': {p: {'expected': h, 'observed': hashes.get(p),
+                              'matches': hashes[p] == h if p in hashes else None}
+                          for p, h in ABI_LIBRARIES.items()}}
 
 
 def devices():
@@ -113,6 +136,7 @@ def capture(selected, destination, emit, stop, factory=Reader):
                 if stop.is_set(): break
                 r = probe.query(cmd, payload, timeout=8)
                 report['identity'][label] = {'status': r['status'],
+                    'raw_hex': r['payload'].hex(),
                     'value': r['payload'].rstrip(b'\0').decode('utf-8', 'replace')}
             for path in queue:
                 if stop.is_set() or total >= TOTAL: break
@@ -152,5 +176,6 @@ def capture(selected, destination, emit, stop, factory=Reader):
         report['error'] = str(e)
     finally:
         report['bytes_received'] = total
+        report['profile_evidence'] = evidence(report)
         save()
     return report

@@ -1,10 +1,11 @@
-"""Standalone Windows GUI. Merely opening this app never starts a write."""
+"""Standalone XREAL GUI. Merely opening this app never starts a write."""
 import ctypes
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import queue
 import sys
 import threading
@@ -14,7 +15,74 @@ from tkinter import ttk, messagebox, filedialog
 
 import backend
 import diagnostics
+import dump_app
 from version import VERSION
+
+
+def report_directory():
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Logs' / 'XREAL Updater'
+    return Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater'
+
+
+def run_operation(selected, firmware, path, verify_only, build, events):
+    # Hold the machine awake during transmission and read-back, on this same thread.
+    report = {'version': VERSION, 'started_utc': datetime.now(timezone.utc).isoformat(),
+              'firmware': firmware.key, 'filename': Path(path).name if path else firmware.filename,
+              'usb_pid': selected.get('product_id'), 'operation': 'verify' if verify_only else 'update',
+              'selected_build': build, 'ok': False}
+    def progress(text, percent):
+        report['last_stage'] = text
+        report['progress'] = percent
+        events.put(('progress', text, percent))
+    awake = None
+    try:
+        if path:
+            with Path(path).open('rb') as source:
+                report['package_sha256'] = hashlib.file_digest(source, 'sha256').hexdigest()
+        if sys.platform == 'win32':
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
+        if sys.platform == 'darwin':
+            awake = subprocess.Popen(['/usr/bin/caffeinate', '-i', '-w', str(os.getpid())])
+        action = backend.verify_only if verify_only else backend.update
+        result = action(selected, progress, firmware=firmware, path=path)
+        report.update(result or {})
+        report['ok'] = True
+        events.put(('done', '', 100))
+    except Exception as e:
+        report['error'] = str(e)
+        report['exception'] = type(e).__name__
+        log = report_directory() / 'last-error.txt'
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text(traceback.format_exc(), encoding='utf-8')
+        except OSError:
+            pass
+    finally:
+        if awake is not None:
+            awake.terminate()
+            awake.wait()
+        progress_value = report.get('progress', 0)
+        stage = 'readback' if progress_value >= 90 else 'restart' if progress_value >= 89 else 'apply' if progress_value >= 86 else 'transfer' if progress_value >= 1 else 'preflight'
+        support = diagnostics.report(report['operation'], stage, ok=report['ok'],
+            error=report.get('error'), exception=report.get('exception'), usb_pid=f"{selected.get('product_id', 0):04x}",
+            firmware=firmware.key, package_sha256=report.get('package_sha256'),
+            progress=progress_value, build_id=(report.get('selected_build') or {}).get('build_id'))
+        support['last_stage'] = diagnostics.clean(report.get('last_stage', ''))
+        events.put(('support', support, 0))
+        if not report['ok']:
+            events.put(('error', support['code'] + ': ' + report.get('error', ''), 0))
+        report['finished_utc'] = datetime.now(timezone.utc).isoformat()
+        try:
+            folder = report_directory()
+            folder.mkdir(parents=True, exist_ok=True)
+            name = datetime.now(timezone.utc).strftime('report-%Y%m%d-%H%M%S-%f.json')
+            (folder/name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+            (folder/'support-report.txt').write_text(diagnostics.render(support), encoding='utf-8')
+        except OSError:
+            pass
+        if sys.platform == 'win32':
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
 
 class App:
@@ -38,10 +106,13 @@ class App:
         root.geometry(f'{width}x{height}+{left+20}+{top+20}')
         root.minsize(min(320, width), min(220, height))
         root.protocol('WM_DELETE_WINDOW', self.close)
+        if sys.platform == 'darwin':
+            root.createcommand('tk::mac::Quit', self.close)
+        font = 'Helvetica Neue' if sys.platform == 'darwin' else 'Segoe UI'
         style = ttk.Style()
         style.theme_use('vista' if 'vista' in style.theme_names() else 'clam')
-        style.configure('TLabel', font=('Segoe UI', 11))
-        style.configure('TButton', font=('Segoe UI', 11), padding=8)
+        style.configure('TLabel', font=(font, 11))
+        style.configure('TButton', font=(font, 11), padding=8)
         shell = ttk.Frame(root)
         shell.pack(fill='both', expand=True)
         shell.rowconfigure(0, weight=1)
@@ -57,13 +128,13 @@ class App:
         frame = ttk.Frame(self.canvas, padding=20)
         self.content = frame
         self.content_window = self.canvas.create_window(0, 0, window=frame, anchor='nw')
-        ttk.Label(frame, text='Русское меню для XREAL One / One Pro / 1S', font=('Segoe UI', 19, 'bold')).pack(anchor='w')
+        ttk.Label(frame, text='Русское меню для XREAL One / One Pro / 1S', font=(font, 19, 'bold')).pack(anchor='w')
         ttk.Label(frame, text='Подключите очки по USB → выберите устройство и прошивку → установите.',
                   wraplength=650).pack(anchor='w', pady=(10, 18))
         ttk.Label(frame, text='1. Выберите очки').pack(anchor='w')
         row = ttk.Frame(frame)
         row.pack(fill='x', pady=(8, 16))
-        self.combo = ttk.Combobox(row, state='readonly', font=('Segoe UI', 11))
+        self.combo = ttk.Combobox(row, state='readonly', font=(font, 11))
         self.combo.pack(fill='x')
         self.combo.bind('<<ComboboxSelected>>', self.selected)
         self.refresh_button = ttk.Button(row, text='Обновить список', command=self.refresh)
@@ -77,7 +148,7 @@ class App:
         self.browse_button.pack(anchor='w', pady=(6, 8))
         self.description = ttk.Label(frame, wraplength=640, justify='left')
         self.description.pack(anchor='w', pady=(5, 10))
-        ttk.Label(frame, text='EXE и BIN скачиваются отдельно. Приложение проверяет формат, контрольные суммы '
+        ttk.Label(frame, text='Выберите отдельный BIN-файл для вашей модели. Приложение проверяет формат, контрольные суммы '
                   'и совместимость BIN перед записью. Русский заменяет польский язык, английский сохраняется.',
                   wraplength=640).pack(anchor='w')
         ttk.Label(frame, text='Закройте страницу обновления XREAL. Не отключайте USB-кабель во время записи.',
@@ -88,6 +159,8 @@ class App:
         self.verify_button.pack(anchor='w', pady=(6, 0))
         self.diagnostic_button = ttk.Button(frame, text='Диагностика / отчёт об ошибке…', command=self.show_diagnostics)
         self.diagnostic_button.pack(anchor='w', pady=(6, 0))
+        self.dump_button = ttk.Button(frame, text='Собрать дамп устройства…', command=self.show_dump)
+        self.dump_button.pack(anchor='w', pady=(6, 0))
         self.progress = ttk.Progressbar(frame, maximum=100)
         self.progress.pack(fill='x', pady=(18, 10))
         self.status = tk.StringVar(value='Поиск подключённых очков…')
@@ -101,6 +174,17 @@ class App:
         root.bind('<FocusIn>', self.reveal_focus)
         root.after(100, self.refresh)
         root.after(100, self.poll)
+
+    def show_dump(self):
+        if self.busy:
+            return
+        self.busy = True
+        try:
+            window = dump_app.open_window(self.root)
+            window.grab_set()
+            self.root.wait_window(window)
+        finally:
+            self.busy = False
 
     def show_diagnostics(self):
         if self.busy:
@@ -182,7 +266,7 @@ class App:
         # On unusually narrow/high-DPI displays keep every control reachable
         # through horizontal scrolling instead of clipping a button.
         minimum = max(button.winfo_reqwidth() for button in
-                      (self.install_button, self.verify_button, self.refresh_button, self.browse_button, self.diagnostic_button)) + 40
+                      (self.install_button, self.verify_button, self.refresh_button, self.browse_button, self.diagnostic_button, self.dump_button)) + 40
         width = max(available, minimum)
         self.canvas.itemconfigure(self.content_window, width=width)
         for label in self.labels:
@@ -311,57 +395,7 @@ class App:
         threading.Thread(target=self.worker, args=(selected, firmware, path, verify_only), daemon=False).start()
 
     def worker(self, selected, firmware, path, verify_only=False):
-        # Hold the machine awake during transmission and read-back, on this same thread.
-        report = {'version': VERSION, 'started_utc': datetime.now(timezone.utc).isoformat(),
-                  'firmware': firmware.key, 'filename': Path(path).name if path else firmware.filename,
-                  'usb_pid': selected.get('product_id'), 'operation': 'verify' if verify_only else 'update',
-                  'selected_build': self.build, 'ok': False}
-        def progress(text, percent):
-            report['last_stage'] = text
-            report['progress'] = percent
-            self.events.put(('progress', text, percent))
-        try:
-            if path:
-                with Path(path).open('rb') as source:
-                    report['package_sha256'] = hashlib.file_digest(source, 'sha256').hexdigest()
-            if sys.platform == 'win32':
-                ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
-            action = backend.verify_only if verify_only else backend.update
-            result = action(selected, progress, firmware=firmware, path=path)
-            report.update(result or {})
-            report['ok'] = True
-            self.events.put(('done', '', 100))
-        except Exception as e:
-            report['error'] = str(e)
-            report['exception'] = type(e).__name__
-            log = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater' / 'last-error.txt'
-            try:
-                log.parent.mkdir(parents=True, exist_ok=True)
-                log.write_text(traceback.format_exc(), encoding='utf-8')
-            except OSError:
-                pass
-        finally:
-            progress_value = report.get('progress', 0)
-            stage = 'readback' if progress_value >= 90 else 'restart' if progress_value >= 89 else 'apply' if progress_value >= 86 else 'transfer' if progress_value >= 1 else 'preflight'
-            support = diagnostics.report(report['operation'], stage, ok=report['ok'],
-                error=report.get('error'), exception=report.get('exception'), usb_pid=f"{selected.get('product_id', 0):04x}",
-                firmware=firmware.key, package_sha256=report.get('package_sha256'),
-                progress=progress_value, build_id=(report.get('selected_build') or {}).get('build_id'))
-            support['last_stage'] = diagnostics.clean(report.get('last_stage', ''))
-            self.events.put(('support', support, 0))
-            if not report['ok']:
-                self.events.put(('error', support['code'] + ': ' + report.get('error', ''), 0))
-            report['finished_utc'] = datetime.now(timezone.utc).isoformat()
-            try:
-                folder = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'XREAL-Russian-Updater'
-                folder.mkdir(parents=True, exist_ok=True)
-                name = datetime.now(timezone.utc).strftime('report-%Y%m%d-%H%M%S-%f.json')
-                (folder/name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-                (folder/'support-report.txt').write_text(diagnostics.render(support), encoding='utf-8')
-            except OSError:
-                pass
-            if sys.platform == 'win32':
-                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        run_operation(selected, firmware, path, verify_only, self.build, self.events)
 
     def poll(self):
         try:

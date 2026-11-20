@@ -1,0 +1,43 @@
+name: Build macOS updater
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - mac/**
+      - mac-worker.spec
+      - installer/**
+      - work/xreal_usb_probe.py
+      - .github/workflows/macos-updater.yml
+permissions:
+  contents: read
+jobs:
+  dmg:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build Apple Silicon application
+        run: |
+          test "$(uname -m)" = arm64
+          uv venv --managed-python --python 3.12 .venv
+          uv pip install --python .venv/bin/python -r installer/requirements.txt
+          PYTHON="$PWD/.venv/bin/python" bash mac/build.sh dist
+      - name: Package and verify disk image
+        run: |
+          image=XREAL-Updater-0.7.2-macOS-arm64.dmg
+          ln -s /Applications dist/Applications
+          hdiutil create -volname "XREAL Updater" -srcfolder dist -format UDZO "$image"
+          mount="$RUNNER_TEMP/xreal-mounted"
+          mkdir "$mount"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$image"
+          trap 'hdiutil detach "$mount"' EXIT
+          app="$mount/XREAL Updater.app"
+          codesign --verify --strict --deep "$app"
+          "$app/Contents/MacOS/XREAL Updater" --self-test "$RUNNER_TEMP/report.json" --bin outputs/xreal-russian-firmware/XREAL_One_Pro_Pilot_RU.bin
+          .venv/bin/python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/report.json")); assert r["ok"] and r["firmware_writes"] == 0'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-updater
+          path: XREAL-Updater-0.7.2-macOS-arm64.dmg
+          if-no-files-found: error

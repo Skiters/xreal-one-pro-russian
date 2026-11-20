@@ -4,6 +4,7 @@ import platform
 import re
 from datetime import datetime, timezone
 
+from profiles import sku_text
 from version import VERSION
 
 
@@ -12,6 +13,7 @@ def clean(value):
     # Exceptions can contain local paths and USB instance/serial identifiers.
     text = re.sub(r'(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*', '<local path omitted>', text)
     text = re.sub(r'(?i)(?:hid|usb)#[^\s]+', '<USB path omitted>', text)
+    text = re.sub(r"/(?:Users|Volumes|private|var|tmp)/[^'\"\r\n]*", '<local path omitted>', text)
     return text[:1200]
 
 
@@ -21,6 +23,9 @@ def report(operation, stage='start', ok=False, error=None, **fields):
               'windows': platform.release(), 'operation': operation,
               'stage': clean(stage), 'ok': ok,
               'code': 'XR-OK' if ok else 'XR-' + operation.upper() + '-' + stage.upper()}
+    if platform.system() == 'Darwin':
+        result['macos'] = platform.mac_ver()[0]
+        result['windows'] = None
     allowed = {'usb_pid', 'soc', 'pilot', 'sku', 'package_sha256', 'build_id',
                'firmware', 'device_count', 'progress', 'exception', 'checks'}
     for key, value in fields.items():
@@ -37,21 +42,22 @@ def render(value):
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def collect(selected=None, path=None, *, backend=None):
+def collect(selected=None, path=None, *, backend=None, enumerate_devices=None, identity_reader=None):
     """Only enumerate and query versions; works without a BIN or connected glasses."""
     if backend is None:
         import backend
     facts = {}
     stage = 'usb'
     try:
-        found = backend.devices()
+        found = (enumerate_devices or backend.devices)()
         facts['device_count'] = len(found)
         if selected is not None:
             facts['usb_pid'] = f"{selected['product_id']:04x}"
             stage = 'identity'
-            with backend.SelectedProbe(selected) as probe:
+            with (identity_reader or backend.SelectedProbe)(selected) as probe:
                 for key, command, payload in [('soc', 38, b''), ('pilot', 4627, b'\x02'), ('sku', 204, b'')]:
-                    facts[key] = backend.checked(probe, command, payload).rstrip(b'\0').decode('utf-8')
+                    raw = backend.checked(probe, command, payload)
+                    facts[key] = sku_text(raw) if key == 'sku' else raw.rstrip(b'\0').decode('utf-8')
         elif not found:
             return report('diagnostic', 'no-device', error=RuntimeError('Очки не найдены по USB.'), **facts)
         else:

@@ -9,7 +9,7 @@ import time
 import zipfile
 
 from package_format import container_crc, read_container, bounded_zip, MAX_CONTAINER, MAX_FILE
-from profiles import validate_build, check_abi
+from profiles import validate_build, check_abi, sku_text
 
 import hid
 
@@ -97,8 +97,9 @@ def checked(probe, command, payload=b'', timeout=16):
 
 
 def identity(probe, firmware=STANDARD):
-    actual = tuple(checked(probe, cmd, payload).rstrip(b'\0').decode('utf-8')
-                   for cmd, payload in [(38, b''), (4627, b'\x02'), (204, b'')])
+    actual = (checked(probe, 38).rstrip(b'\0').decode('utf-8'),
+              checked(probe, 4627, b'\x02').rstrip(b'\0').decode('utf-8'),
+              sku_text(checked(probe, 204)))
     pid = getattr(probe, 'selected', {}).get('product_id', 0x0436)
     one = pid == 0x0438
     supported_current = (actual[1] in ACCEPTED_PILOT and
@@ -198,6 +199,18 @@ def verify_files(probe, expected, emit):
                 raise RuntimeError('Проверка установленного файла не пройдена: '+name)
 
 
+def readback_device(selected):
+    # macOS assigns a new IORegistry path when the glasses reboot.
+    if sys.platform != 'darwin' or not selected.get('serial_number'):
+        return selected
+    matches = [device for device in devices()
+               if device['product_id'] == selected.get('product_id')
+               and device.get('serial_number') == selected['serial_number']]
+    if len(matches) != 1:
+        raise OSError('Не удалось однозначно определить очки для проверки после перезапуска.')
+    return matches[0]
+
+
 def verify_selected(selected, expected, emit, probe_factory=SelectedProbe, sleep=time.sleep,
                     firmware=STANDARD):
     # Only read-back is retryable. Restart the entire export session on a fresh
@@ -243,7 +256,8 @@ def update(selected, emit, probe_factory=SelectedProbe, package_loader=None, sle
     sleep(5)
     for attempt in range(30):
         try:
-            with probe_factory(selected) as probe:
+            after_restart = readback_device(selected)
+            with probe_factory(after_restart) as probe:
                 actual = identity(probe, firmware)
                 if actual[1] != firmware.pilot:
                     raise RuntimeError('Очки ещё не запустили выбранную версию Pilot.')
@@ -254,7 +268,7 @@ def update(selected, emit, probe_factory=SelectedProbe, package_loader=None, sle
                                    'Успех установки не подтверждён. Переподключите очки и проверьте меню.')
             sleep(2)
     try:
-        verify_selected(selected, expected, emit, probe_factory=probe_factory, sleep=sleep,
+        verify_selected(after_restart, expected, emit, probe_factory=probe_factory, sleep=sleep,
                         firmware=firmware)
     except Exception as e:
         raise RuntimeError('Очки приняли пакет, но проверка файлов не завершена. '
