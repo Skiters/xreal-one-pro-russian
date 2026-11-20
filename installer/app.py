@@ -440,6 +440,13 @@ class App:
             self.root.destroy()
 
 
+def open_workspace(root):
+    if sys.platform == "win32":
+        from windows_workspace import Workspace
+        return Workspace(root, run_operation)
+    return App(root)
+
+
 def main():
     if any(flag in sys.argv for flag in ('--self-test', '--check-device', '--verify-device')):
         # Diagnostics never issue firmware-writing commands.
@@ -455,7 +462,7 @@ def main():
                             'package_sha256': expected.package_sha256, 'build': expected.build}
         root = tk.Tk()
         root.withdraw()
-        app = App(root)
+        app = open_workspace(root)
         root.update_idletasks()
         found = backend.devices()
         count = len(found)
@@ -493,7 +500,7 @@ def main():
             return
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     root = tk.Tk()
-    App(root)
+    open_workspace(root)
     root.mainloop()
 
 

@@ -1,6 +1,6 @@
 # Building XREAL Updater
 
-Windows release: 0.7.2. The published universal Mac DMG is version 0.7.1 (build 2) for macOS 13 and later. Building the current sources produces version 0.7.2.
+Windows stable release: 0.7.2. The current Windows entry point opens the new three-section preview. To build the preview EXE on Windows, run `./installer/build.ps1 -PreviewOnly` in PowerShell. The standalone output is `outputs/windows-preview/XREAL-Updater-Windows-Preview.exe`; users select a model-specific BIN separately. The published universal Mac DMG is version 0.7.1 (build 2) for macOS 13 and later. Building the current sources produces version 0.7.2.
 
 Portable EXE; separate model-specific BINs. End-user instructions: [project README](../README.md).
 
@@ -31,7 +31,7 @@ The app disables flashing while diagnostics are running. Choosing a BIN, listing
 
 ## Device dump
 
-The Windows updater opens the same read-only collector used by the standalone Windows application. The native Mac app exposes this operation through its local worker. See [dump contents and supported interfaces](DUMP-README.md).
+The Windows preview runs the read-only collector inside its device dump section. The standalone Windows dump tool is also available. The native Mac app exposes this operation through its local worker. See [dump contents and supported interfaces](DUMP-README.md).
 
 ## Universal build for macOS 13 and later
 

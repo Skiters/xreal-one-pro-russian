@@ -6,7 +6,8 @@
 
 | Платформа | Что скачать | Как открыть |
 |---|---|---|
-| Windows x64 | [XREAL Updater 0.7.2 (EXE)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Russian-Updater-0.7.2.exe) | Запустите EXE. В главном окне доступны установка, проверка без записи, диагностика и «Собрать дамп устройства…». |
+| Windows x64, новый интерфейс | [XREAL Updater Windows Preview (EXE)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/windows-preview-0.7.2/XREAL-Updater-Windows-Preview.exe) | Три раздела: «Прошивка», «Диагностика», «Дамп устройства». В компактном окне раздел выбирается сверху. |
+| Windows x64, стабильная версия | [XREAL Updater 0.7.2 (EXE)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Russian-Updater-0.7.2.exe) | Запустите EXE. В главном окне доступны установка, проверка без записи, диагностика и «Собрать дамп устройства…». |
 | macOS 13 Ventura и новее · Intel и Apple Silicon | [XREAL Updater 0.7.1 Universal (DMG)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/macos-universal-0.7.1/XREAL-Updater-Universal-macOS13.dmg) | Откройте образ и перетащите XREAL Updater в «Программы». В приложении доступны прошивка, диагностика и сбор дампа. |
 | Windows x64, только сбор дампа | [XREAL Dump 0.1 (ZIP)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Dump-0.1-Windows.zip) | Распакуйте ZIP и запустите отдельный EXE. |
 
@@ -15,6 +16,12 @@
 Для **macOS 12 Monterey на Apple Silicon** доступна [предыдущая сборка arm64](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Updater-Native-arm64.dmg).
 
 Для прошивки скачайте **один BIN для своей модели** из таблицы ниже. Для диагностики и сбора дампа достаточно приложения и USB-кабеля с передачей данных.
+
+### Как работает Windows Preview
+
+Выберите устройство и BIN. Приложение сначала проверяет содержимое файла, затем сверяет совместимость с выбранными очками. Перед записью покажет модель и имя BIN. Этап операции и результат обратного чтения видны в нижней панели. Для проверки уже установленных файлов нажмите «Проверить без записи». В меню «Вид» доступны системная, светлая и тёмная темы.
+
+Preview проверен на Windows без записи: самотест с базовым One Pro BIN сверил 71 файл. Переключение режимов и запись этой версией на физических очках ещё не проверены.
 
 ### Прошивка, диагностика и дамп
 
@@ -57,10 +64,10 @@
 
 ## Если что-то пошло не так
 
-Откройте «Диагностика / отчёт об ошибке…». Кнопка «Проверить сейчас» считывает модель и версии, а при выбранном BIN также проверяет совместимость. Если ошибка возникла при обратном чтении, переподключите очки, выберите тот же BIN и нажмите «Проверить без записи».
+Откройте раздел «Диагностика» (в стабильном Windows EXE — «Диагностика / отчёт об ошибке…»). Кнопка «Проверить сейчас» считывает модель и версии, а при выбранном BIN также проверяет совместимость. Если ошибка возникла при обратном чтении, переподключите очки, выберите тот же BIN и нажмите «Проверить без записи».
 
 Для разбора ошибки приложите просматриваемый текстовый отчёт с этапом, сообщением и хешем BIN. Для сообщения о качестве изображения укажите модель, сборку, источник видео, выбранный режим и что вы увидели. [Создать обращение](https://github.com/Skiters/xreal-one-pro-russian/issues/new).
 
 ## Техническое описание
 
-[Сборка установщика](installer/README.md) · [Сборка Pilot и тесты](firmware/README.md) · [Сравнение алгоритмов Real3D](firmware/REAL3D-COMPARISON.md) · [История проверок](firmware/VALIDATION.md).
+[Сборка установщика](https://github.com/Skiters/xreal-one-pro-russian/blob/feat/russian-menu-font-fix/installer/README.md) · [Сборка Pilot и тесты](https://github.com/Skiters/xreal-one-pro-russian/blob/feat/russian-menu-font-fix/firmware/README.md) · [Сравнение алгоритмов Real3D](https://github.com/Skiters/xreal-one-pro-russian/blob/feat/russian-menu-font-fix/firmware/REAL3D-COMPARISON.md) · [История проверок](https://github.com/Skiters/xreal-one-pro-russian/blob/feat/russian-menu-font-fix/firmware/VALIDATION.md).
