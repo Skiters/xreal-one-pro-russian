@@ -1,4 +1,6 @@
-# XREAL Updater 0.7.2
+# Building XREAL Updater
+
+Windows release: 0.7.2. The published Mac DMG is the contributor-built native 0.7.1 (build 2). Building the current sources produces version 0.7.2.
 
 Portable EXE; separate model-specific BINs. End-user instructions: [project README](../README.md).
 

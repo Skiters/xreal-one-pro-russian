@@ -1,6 +1,6 @@
 # Pilot adapters and model packages — 0.7.0
 
-One Pro release payload is the exact user-confirmed rc7 BIN. One remains an experimental Pilot port. 1S uses stock Pilot 1.9.1 with language resources only. These are not new SoC/DSP firmwares.
+The baseline 0.7.0 One Pro release payload is the exact user-confirmed rc7 BIN. One remains an experimental Pilot port. 1S uses stock Pilot 1.9.1 with language resources only. These are not new SoC/DSP firmwares.
 Closed XREAL binaries are pinned inputs. The reproducible part is our adapter
 and deterministic repackaging of those inputs.
 
