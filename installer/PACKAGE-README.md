@@ -14,7 +14,9 @@
 | **One или One Pro**, нужен только перевод | [Русский Pilot 1.9.1](https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.7.0/XREAL-One-OnePro-RU-Pilot1.9.1.bin) | Штатное меню с переведёнными строками и кириллицей. |
 | **1S**, нужен русский язык | [Русский Pilot 1.9.1 для 1S](https://github.com/Skiters/xreal-one-pro-russian/releases/download/v0.7.0/XREAL-1S-RU-Pilot1.9.1.bin) | Проверен состав пакета. Изменены перевод и шрифты. Проверка на физических 1S ожидается. |
 
-Для **1 Pro+** проект предлагает сбор данных. Владельцы могут помочь сравнить оригинальные библиотеки и модели для HDR и Real3D. Программа сохраняет доступные файлы локально. В инструкции указано, как передать результат, в том числе при частичном чтении. [Сборщик XREAL Dump 0.1 и участие в проекте](https://github.com/Skiters/xreal-one-pro-russian/blob/feat/russian-menu-font-fix/installer/DUMP-README.md).
+## Для каких очков нужны дампы
+
+Для восьми моделей из каталога пока собираем данные: XREAL 1 Pro+, XREAL Air, XREAL Air 2, XREAL Air 2 Pro, XREAL Air 2 Ultra, ROG XREAL R1, XREAL XBX a01, XREAL Aura. Если у вас одна из этих моделей, скачайте [XREAL Dump для Windows x64](https://raw.githubusercontent.com/Skiters/xreal-one-pro-russian/feat/russian-menu-font-fix/installer/XREAL-Dump-0.1-Windows.zip). Программа пробует прочитать файлы через USB. Возможность чтения зависит от интерфейса конкретных очков. Если устройство не появилось в списке, укажите модель в обращении. [Инструкция и отправка результата](https://github.com/Skiters/xreal-one-pro-russian/blob/feat/russian-menu-font-fix/installer/DUMP-README.md).
 
 ## Что изменилось в экспериментальной One Pro 0.7.1
 

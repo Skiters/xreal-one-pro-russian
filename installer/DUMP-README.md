@@ -1,8 +1,17 @@
 # XREAL Dump 0.1 — Windows x64
 
-Особенно нужны результаты со штатных **XREAL 1 Pro+**. Сравнение версий и контрольных сумм библиотек DSP/NPU с One Pro помогает выяснить, какие компоненты отвечают за AI HDR и Real3D. Прочитать каждый файл удаётся не на всех моделях. Если сбор прервался, отчёт всё равно покажет, на каком запросе это произошло.
+Собираем дампы следующих моделей. Названия сверены с карточками каталога 20 ноября 2026 года. Для всех используется один сборщик. По отчётам владельцев проверяем доступность USB-экспорта, состав прошивок и различия библиотек и моделей. Для XREAL 1 Pro+ особенно интересуют компоненты AI HDR и Real3D.
 
-[Скачать сборщик для Windows x64 (ZIP)](https://raw.githubusercontent.com/Skiters/xreal-one-pro-russian/feat/russian-menu-font-fix/installer/XREAL-Dump-0.1-Windows.zip). Распакуйте ZIP. SHA256 архива — `cb09b6b7ddf0fbc192a0017d3621d459c9c4edb8672064697d5bb2845f9ada51`.
+- [XREAL 1 Pro+](https://xreal.com.ru/products/1-pro-plus?variant=146)
+- [XREAL Air](https://xreal.com.ru/products/air)
+- [XREAL Air 2](https://xreal.com.ru/products/air-2)
+- [XREAL Air 2 Pro](https://xreal.com.ru/products/air-2-pro)
+- [XREAL Air 2 Ultra](https://xreal.com.ru/products/air-2-ultra)
+- [ROG XREAL R1](https://xreal.com.ru/products/rog-xreal-r1)
+- [XREAL XBX a01](https://xreal.com.ru/products/xbx-a01)
+- [XREAL Aura](https://xreal.com.ru/products/aura)
+
+[Скачать сборщик для Windows x64 (ZIP)](https://raw.githubusercontent.com/Skiters/xreal-one-pro-russian/feat/russian-menu-font-fix/installer/XREAL-Dump-0.1-Windows.zip). Распакуйте ZIP. SHA256 архива — `6c4583577e4d327f5394c859bd0e9047195d25043e563ce2d59d630eed959d49`.
 
 **Как передать результат.** [Откройте заявку в проекте](https://github.com/Skiters/xreal-one-pro-russian/issues/new). В заголовке укажите модель и версию Pilot, если она известна. В сообщении напишите, штатная ли прошивка, увидел ли сборщик очки и завершилось ли чтение. Если хотите поделиться дампом, приложите ZIP с проверенными вами файлами или ссылку на него. Заявки публичны. Можно прислать только проверенный `report.json`, убрав личные данные, или просто описать ошибку обнаружения. Серийный номер не нужен.
 
