@@ -114,7 +114,12 @@ These host tests do not validate the target's HAL or optics.
    no stale frames. Use movement as well as a static scene.
 4. Capture logs for at least 60 seconds per mode. `measure.py` reports sampled
    callback throughput and stage times per stream (`hdr`, `real3d`; each init
-   line restarts only its own stream); separately inspect NPU/queue delays,
+   line restarts only its own stream). For AI HDR each sample logs `map`,
+   `convert`, `flush` and `total` microseconds of that one frame, plus the
+   worst whole-callback time and the worst gap between callback entries since
+   the previous sample. `--hdr-sample-frames N` sets the sample period for a
+   diagnostic build. These are adapter-side times: the vendor queue before the
+   callback and the display path after it are not included. Separately inspect NPU/queue delays,
    display frame pacing, temperature and end-to-end latency. A 60 Hz EDID
    entry does not establish 60 processed frames/s.
 5. Record these results for the relevant model. Current One Pro user confirmation

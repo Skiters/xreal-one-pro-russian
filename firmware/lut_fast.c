@@ -9,6 +9,12 @@ typedef unsigned long long u64;
 typedef u32 pixels4 __attribute__((vector_size(16)));
 typedef u8 bytes4 __attribute__((vector_size(4)));
 #define TABLE_WORDS (17U * 256U * 256U)
+/* The 4.25 MiB table does not fit the target caches, and both entries of a
+ * pixel are 256 KiB apart. Requesting the entries of the pixels a few
+ * iterations ahead lets their cache misses overlap instead of being served
+ * one by one. Only prefetch hints are added: every value read and all
+ * arithmetic are unchanged, so the output is bit-identical. */
+#define PREFETCH_PIXELS 16U
 
 
 unsigned long long xreal_rgb_table_bytes(void) {
@@ -56,6 +62,14 @@ int xreal_full_rgb_lut(const u64 *table, u8 *r, u8 *g, u8 *b,
         u8 *rp=r+(u64)y*rs, *gp=g+(u64)y*gs, *bp=b+(u64)y*bs;
         u32 x=0;
         for (; x+4<=width; x+=4) {
+            /* Pixels ahead in this row are still unmodified input. */
+            if (x+PREFETCH_PIXELS+4<=width) for (u32 lane=0;lane<4;++lane) {
+                u32 ahead=x+PREFETCH_PIXELS+lane;
+                u32 next=(compact[TABLE_WORDS+bp[ahead]]&0xffff0000) |
+                         ((u32)gp[ahead]<<8) | rp[ahead];
+                __builtin_prefetch(compact+next,0,1);
+                __builtin_prefetch(compact+next+65536,0,1);
+            }
             pixels4 a,d,weight;
             for (u32 lane=0;lane<4;++lane) {
                 u32 mapping=compact[TABLE_WORDS+bp[x+lane]];

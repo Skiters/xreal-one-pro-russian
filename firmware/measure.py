@@ -12,9 +12,14 @@ def summarize(text):
     # counters; each init line only restarts its own stream.
     sessions=[]
     current={'hdr':[],'real3d':[]}
+    # Sampled HDR stage durations: one value per sampled frame, not per frame.
+    stages={}
     def finish(stream):
-        if current[stream]:sessions.append((stream,current[stream]))
+        nonlocal stages
+        if current[stream]:
+            sessions.append((stream,current[stream],stages if stream=='hdr' else {}))
         current[stream]=[]
+        if stream=='hdr':stages={}
     for line in text.splitlines():
         if re.search(r'Real3D CPU init',line):finish('real3d')
         if re.search(r'CPU v7: LUT initialized',line):finish('hdr')
@@ -27,9 +32,13 @@ def summarize(text):
         if match:
             frame,stamp=map(int,match.groups())
             current['hdr'].append(dict(frame=frame,stamp=stamp))
+        match=re.search(r'CPU diagnostic: (map|convert|flush|total|window worst total|window worst gap)'
+                        r' microseconds .*value=(-?\d+)',line)
+        if match:
+            stages.setdefault(match.group(1).replace(' ','_')+'_us',[]).append(int(match.group(2)))
     for stream in current:finish(stream)
     result=[]
-    for stream,session in sessions:
+    for stream,session,stage_values in sessions:
         intervals=[(b['frame']-a['frame'])*1e6/(b['stamp']-a['stamp'])
                    for a,b in zip(session,session[1:])
                    if b['stamp']>a['stamp'] and b['frame']>a['frame']]
@@ -40,6 +49,8 @@ def summarize(text):
         for field in ('map_us','compute_us','flush_us'):
             values=[s[field] for s in session if field in s]
             if values:report[field]={'median':statistics.median(values),'max':max(values)}
+        for field,values in stage_values.items():
+            report[field]={'median':statistics.median(values),'max':max(values),'samples':len(values)}
         result.append(report)
     return {'sessions':result,
             'limitations':'Sampled adapter callbacks only; display refresh, NPU queueing, '

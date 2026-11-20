@@ -22,6 +22,21 @@ extern int close(int);
 extern int snprintf(char *,u64,const char *,...);
 static u64 *dense;
 static u32 frame_count;
+/* HDR timings are sampled once per this many successful frames. */
+#ifndef XREAL_HDR_SAMPLE_FRAMES
+#ifdef XREAL_UI_FAST
+#define XREAL_HDR_SAMPLE_FRAMES 1800
+#else
+#define XREAL_HDR_SAMPLE_FRAMES 30
+#endif
+#endif
+_Static_assert(XREAL_HDR_SAMPLE_FRAMES>=1,"HDR sample period");
+/* Worst whole-callback time and worst gap between callback entries since the
+ * previous sample. Diagnostic only; reset by every LUT initialization. */
+static long window_worst_total_us,window_worst_gap_us,last_entered_us;
+static int last_entered_ok;
+/* While >=0, trace() appends to this descriptor instead of reopening the log. */
+static int trace_batch_fd=-1;
 extern u64 xreal_rgb_table_bytes(void);
 extern int xreal_build_rgb_table_range(const u16 *,u64 *,u32,u32);
 extern int xreal_full_rgb_lut(const u64 *,u8 *,u8 *,u8 *,u32,u32,u32,u32,u32);
@@ -30,8 +45,12 @@ static void trace(const char *stage,u64 p,u32 n,long value) {
     int count=snprintf(line,sizeof(line),"CPU diagnostic: %s phys=0x%lx size=%u value=%ld\n",stage,p,n,value);
     if(count<=0 || count>=(int)sizeof(line))return;
     write(2,line,(u64)count);
+    if(trace_batch_fd>=0){write(trace_batch_fd,line,(u64)count);return;}
     int fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
     if(fd>=0){write(fd,line,(u64)count);close(fd);}
+}
+static long elapsed_us(const struct timespec *from,const struct timespec *to) {
+    return (to->sec-from->sec)*1000000+(to->nsec-from->nsec)/1000;
 }
 static void record(const char *event,int code) {
     char line[160];int n=snprintf(line,sizeof(line),"CPU v7: %s rc=%d frames=%u\n",event,code,frame_count);
@@ -115,6 +134,7 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         int rc=0;
         for(u32 i=0;i<4;i++)if(jobs[i].rc)rc=jobs[i].rc;
         if(rc)free(next);else dense=next;
+        window_worst_total_us=0;window_worst_gap_us=0;last_entered_ok=0;
         frame_count=0;record("LUT initialized",rc);
         return result(a->result,rc);
     }
@@ -137,9 +157,17 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(a->result<a->planes[i]+sizes[i] && a->planes[i]<a->result+64)return -22;
         for(u32 j=0;j<i;j++) if(a->planes[i]<a->planes[j]+sizes[j] && a->planes[j]<a->planes[i]+sizes[i])return -22;
     }
-    for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
-    struct timespec before,converted,flushed;
+    struct timespec entered,before,converted,flushed;
     /* Timing is diagnostic only: a failed reading is never used or logged. */
+    int entered_ok=clock_gettime(1,&entered)==0;
+    if(entered_ok) {
+        long now=entered.sec*1000000+entered.nsec/1000;
+        if(last_entered_ok && now-last_entered_us>window_worst_gap_us)
+            window_worst_gap_us=now-last_entered_us;
+        last_entered_us=now;
+    }
+    last_entered_ok=entered_ok;
+    for(u32 i=0;i<3;i++){planes[i]=map(a->planes[i],sizes[i]);if(!planes[i]){rc=-5;goto done;}}
     int before_ok=clock_gettime(1,&before)==0;
     rc=rgb_parallel(dense,planes,a->strides,a->width,a->height);
     int converted_ok=clock_gettime(1,&converted)==0;
@@ -158,24 +186,29 @@ static int dispatch_rpc(u32 core,const struct rpc *call,u32 sync) {
         if(rc)break;
     }
     int flushed_ok=clock_gettime(1,&flushed)==0;
-    if(frame_count%
-#ifdef XREAL_UI_FAST
-       1800
-#else
-       30
-#endif
-       ==0) {
-        if(before_ok && converted_ok) {
-            long convert_us=(converted.sec-before.sec)*1000000+(converted.nsec-before.nsec)/1000;
-            trace("convert microseconds",a->planes[0],a->width,convert_us);
-        }
-        if(converted_ok && flushed_ok) {
-            long flush_us=(flushed.sec-converted.sec)*1000000+(flushed.nsec-converted.nsec)/1000;
-            trace("flush microseconds",a->planes[0],a->width,flush_us);
-        }
+    /* Map + convert + flush; unmapping and the result write are not included. */
+    int total_ok=!rc && entered_ok && flushed_ok;
+    long total_us=total_ok?elapsed_us(&entered,&flushed):0;
+    if(total_ok && total_us>window_worst_total_us)window_worst_total_us=total_us;
+    if(frame_count%XREAL_HDR_SAMPLE_FRAMES==0) {
+        /* One open/close for the whole sample instead of one per line. */
+        trace_batch_fd=open("/usrdata/aihdr-cpu.log",1|64|1024,0600);
+        if(entered_ok && before_ok)
+            trace("map microseconds",a->planes[0],a->width,elapsed_us(&entered,&before));
+        if(before_ok && converted_ok)
+            trace("convert microseconds",a->planes[0],a->width,elapsed_us(&before,&converted));
+        if(converted_ok && flushed_ok)
+            trace("flush microseconds",a->planes[0],a->width,elapsed_us(&converted,&flushed));
+        if(total_ok)
+            trace("total microseconds",a->planes[0],a->width,total_us);
+        /* Zero means no valid reading in the window, not a zero duration. */
+        trace("window worst total microseconds",0,frame_count,window_worst_total_us);
+        trace("window worst gap microseconds",0,frame_count,window_worst_gap_us);
+        window_worst_total_us=0;window_worst_gap_us=0;
         if(flushed_ok)
             trace("frame timestamp microseconds",0,frame_count,
                   flushed.sec*1000000+flushed.nsec/1000);
+        if(trace_batch_fd>=0){close(trace_batch_fd);trace_batch_fd=-1;}
     }
 done:
     for(u32 i=0;i<3;i++)if(planes[i])ar_hal_sys_munmap(planes[i],sizes[i]);

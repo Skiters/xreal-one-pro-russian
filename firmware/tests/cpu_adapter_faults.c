@@ -319,8 +319,9 @@ static void test_failed_reinit_drops_old_lut(void) {
 /* ---- 3: clock_gettime failure ------------------------------------------ */
 static void test_clock_failure(void) {
     puts("-- 3: clock_gettime failure");
-    /* mask bits: 0 = before conversion, 1 = after conversion, 2 = after flush */
-    const unsigned masks[] = {0, 1, 2, 4, 7};
+    /* mask bits: 0 = callback entry (before mapping), 1 = before conversion,
+     * 2 = after conversion, 3 = after flush */
+    const unsigned masks[] = {0, 1, 2, 4, 8, 15};
     for (unsigned m = 0; m < sizeof masks / sizeof masks[0]; m++) {
         unsigned mask = masks[m];
         test_faults(0, 0);
@@ -334,13 +335,21 @@ static void test_clock_failure(void) {
         CHECK(rc == 0 && *status() == 0 && planes_are(10, 20, 30),
               "mask %u: frame disturbed rc=%d result=%d", mask, rc, (int)*status());
         CHECK(strstr(captured, "frame processed rc=0") != NULL, "mask %u: frame not counted", mask);
-        int before = !(mask & 1), converted = !(mask & 2), flushed = !(mask & 4);
+        int entered = !(mask & 1), before = !(mask & 2), converted = !(mask & 4), flushed = !(mask & 8);
+        int has_map = strstr(captured, "map microseconds") != NULL;
         int has_convert = strstr(captured, "convert microseconds") != NULL;
         int has_flush = strstr(captured, "flush microseconds") != NULL;
+        /* "window worst total microseconds" is a separate, always printed line. */
+        int has_total = strstr(captured, "CPU diagnostic: total microseconds") != NULL;
         int has_stamp = strstr(captured, "frame timestamp microseconds") != NULL;
         if (!mask) {
-            CHECK(has_convert && has_flush && has_stamp, "control: timing traces not observed:\n%s", captured);
+            CHECK(has_map && has_convert && has_flush && has_total && has_stamp,
+                  "control: timing traces not observed:\n%s", captured);
         } else {
+            CHECK(!has_map || (entered && before),
+                  "mask %u: map time printed from a failed clock reading:\n%s", mask, captured);
+            CHECK(!has_total || (entered && flushed),
+                  "mask %u: total time printed from a failed clock reading:\n%s", mask, captured);
             CHECK(!has_convert || (before && converted),
                   "mask %u: conversion time printed from a failed clock reading:\n%s", mask, captured);
             CHECK(!has_flush || (converted && flushed),
