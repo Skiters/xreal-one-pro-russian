@@ -1,6 +1,6 @@
 # Building XREAL Updater
 
-Windows release: 0.7.2. The published Mac DMG is the contributor-built native 0.7.1 (build 2). Building the current sources produces version 0.7.2.
+Windows release: 0.7.2. The published universal Mac DMG is version 0.7.1 (build 2) for macOS 13 and later. Building the current sources produces version 0.7.2.
 
 Portable EXE; separate model-specific BINs. End-user instructions: [project README](../README.md).
 
@@ -33,7 +33,24 @@ The app disables flashing while diagnostics are running. Choosing a BIN, listing
 
 The Windows updater opens the same read-only collector used by the standalone Windows application. The native Mac app exposes this operation through its local worker. See [dump contents and supported interfaces](DUMP-README.md).
 
-## Build for Apple Silicon
+## Universal build for macOS 13 and later
+
+On an Apple Silicon build host with Xcode, Python 3 and uv, use a new environment directory and output directory:
+
+```sh
+python3 mac/prepare_universal.py work/universal-env
+PYTHON="$PWD/work/universal-env/env/bin/python" bash mac/build.sh dist-universal universal2
+```
+
+This builds the current branch for Intel and Apple Silicon. The build checks each Mach-O file for both architectures and compatible deployment targets. To create a disk image, add an Applications shortcut and package the output directory:
+
+```sh
+ln -s /Applications dist-universal/Applications
+hdiutil create -volname "XREAL Updater" -srcfolder dist-universal -format UDZO XREAL-Updater-Universal.dmg
+hdiutil verify XREAL-Updater-Universal.dmg
+```
+
+## Apple Silicon build for macOS 12 and later
 
 On an Apple Silicon Mac with the macOS SDK, Swift and Python 3.12 with Tk, run from the repository root:
 

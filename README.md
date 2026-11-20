@@ -7,8 +7,12 @@
 | Платформа | Что скачать | Как открыть |
 |---|---|---|
 | Windows x64 | [XREAL Updater 0.7.2 (EXE)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Russian-Updater-0.7.2.exe) | Запустите EXE. В главном окне доступны установка, проверка без записи, диагностика и «Собрать дамп устройства…». |
-| Mac с Apple Silicon | [XREAL Updater 0.7.1, сборка 2 (DMG)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Updater-Native-arm64.dmg) | Откройте DMG, перетащите приложение в «Программы» и запустите. В боковом меню выберите прошивку, диагностику или дамп. Сборка для arm64 с локальной подписью без нотарификации Apple. |
+| macOS 13 Ventura и новее · Intel и Apple Silicon | [XREAL Updater 0.7.1 Universal (DMG)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/macos-universal-0.7.1/XREAL-Updater-Universal-macOS13.dmg) | Откройте образ и перетащите XREAL Updater в «Программы». В приложении доступны прошивка, диагностика и сбор дампа. |
 | Windows x64, только сбор дампа | [XREAL Dump 0.1 (ZIP)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Dump-0.1-Windows.zip) | Распакуйте ZIP и запустите отдельный EXE. |
+
+Универсальный DMG подписан локально (ad hoc), без нотарификации Apple. Проверены обе архитектуры приложения и встроенных библиотек. Самотест выполнен на Apple Silicon. Запуск на физическом Intel Mac и прошивка очков этой сборкой ещё не проверены. [Контрольная сумма DMG (SHA-256)](https://github.com/Skiters/xreal-one-pro-russian/releases/download/macos-universal-0.7.1/XREAL-Updater-Universal-macOS13.dmg.sha256).
+
+Для **macOS 12 Monterey на Apple Silicon** доступна [предыдущая сборка arm64](https://github.com/Skiters/xreal-one-pro-russian/releases/download/apps-0.7.2/XREAL-Updater-Native-arm64.dmg).
 
 Для прошивки скачайте **один BIN для своей модели** из таблицы ниже. Для диагностики и сбора дампа достаточно приложения и USB-кабеля с передачей данных.
 
